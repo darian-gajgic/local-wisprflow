@@ -102,6 +102,14 @@ DEFAULTS = {
     "key_delay_ms": 4,                # per-keystroke delay for `ydotool type`
     "trailing_space": True,           # append a space so consecutive dictations don't run together
 
+    # --- meeting mode (dual-channel: mic = "Me", system-audio monitor = "Client") ---
+    "meeting_dir": "~/wf-meetings",   # timestamped transcript .md files go here
+    "meeting_vad_floor": 0.02,        # energy-VAD speech threshold (RMS) — tune per mic/room
+    "meeting_silence_ms": 700,        # trailing silence that closes an utterance
+    "meeting_min_speech_ms": 300,     # ignore speech blips shorter than this
+    "meeting_max_seg_s": 24,          # force-flush a monologue after this many seconds
+    "meeting_beam_size": 3,           # transcription beam for meetings (quality vs speed)
+
     # --- feedback ---
     "overlay": True,                  # animated on-screen listening pill + 1s "inserted" flash
     "notify": False,                  # desktop notifications via notify-send (overlay replaces these)
@@ -143,7 +151,7 @@ def notify(cfg: dict, title: str, body: str = "") -> None:
 # ---------------------------------------------------------------------------
 # Daemon
 # ---------------------------------------------------------------------------
-IDLE, RECORDING, PROCESSING = "idle", "recording", "processing"
+IDLE, RECORDING, PROCESSING, MEETING = "idle", "recording", "processing", "meeting"
 
 # ydotool key sequences as evdev codes (leftctrl=29, leftshift=42, v=47, insert=110).
 # These are PHYSICAL keys — identical on US / German-QWERTZ / any layout — so pasting inserts
@@ -172,6 +180,7 @@ class Daemon:
         self._srv = None
         self._shutdown_requested = False
         self._overlay = None  # the listening-overlay subprocess (or None)
+        self._meeting = None  # active MeetingSession (or None)
 
     # -- model ----------------------------------------------------------------
     def _make_model(self, device: str, compute_type: str):
@@ -415,13 +424,13 @@ class Daemon:
     def _overlay_path(self) -> str:
         return os.path.join(os.path.dirname(os.path.abspath(__file__)), "wf-overlay.py")
 
-    def _overlay_start(self) -> None:
+    def _overlay_start(self, mode: str = "listening") -> None:
         if not self.cfg.get("overlay", True):
             return
         self._overlay_stop()
         try:
             self._overlay = subprocess.Popen(
-                [sys.executable, self._overlay_path(), "listening"],
+                [sys.executable, self._overlay_path(), mode],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:  # noqa: BLE001
             log(f"overlay start failed: {e!r}")
@@ -444,6 +453,62 @@ class Daemon:
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:  # noqa: BLE001
             pass
+
+    # -- meeting mode (dual-channel Me/Client transcription) ------------------
+    def _cmd_meeting(self) -> str:
+        """Overlay 'Meeting' button (or `wf-toggle meeting`) -> switch this session to meeting."""
+        with self.lock:
+            if self.state == MEETING:
+                return "already meeting"
+            if self.state == PROCESSING:
+                return "busy"
+            if self.state == RECORDING:
+                self.cancel_flag = True   # abandon the in-flight normal recording
+                self.stop_event.set()
+        threading.Thread(target=self._enter_meeting, daemon=True).start()
+        return "meeting"
+
+    def _enter_meeting(self) -> None:
+        for _ in range(100):              # wait up to ~5s for any normal session to unwind
+            with self.lock:
+                if self.state == IDLE:
+                    break
+            time.sleep(0.05)
+        self.start_meeting()
+
+    def start_meeting(self) -> None:
+        with self.lock:
+            if self.state != IDLE:
+                return
+            self.state = MEETING
+        try:
+            from wf_meeting import MeetingSession
+        except Exception as e:  # noqa: BLE001
+            log(f"meeting: import failed: {e!r}")
+            with self.lock:
+                self.state = IDLE
+            return
+        self._overlay_start(mode="meeting")
+        self._meeting = MeetingSession(self, log)
+        if not self._meeting.start():
+            self._meeting = None
+            self._overlay_stop()
+            self._overlay_done("⚠ meeting: no audio")
+            with self.lock:
+                self.state = IDLE
+            return
+        log("meeting mode ON")
+
+    def stop_meeting(self) -> None:
+        m, self._meeting = self._meeting, None
+        path = m.stop() if m else None
+        self._overlay_stop()
+        with self.lock:
+            if self.state == MEETING:
+                self.state = IDLE
+        if path:
+            self._overlay_done(f"Saved {os.path.basename(path)}")
+        log("meeting mode OFF")
 
     # -- session --------------------------------------------------------------
     def run_session(self) -> None:
@@ -496,12 +561,18 @@ class Daemon:
                     self.stop_event.set()
                     return "cancelling"
             return self.state
+        if cmd == "meeting":
+            return self._cmd_meeting()
         if cmd in ("toggle", "start", "stop"):
             return self._toggle(cmd)
         return f"unknown command: {cmd}"
 
     def _toggle(self, cmd: str) -> str:
         with self.lock:
+            if self.state == MEETING:
+                # the hotkey during a meeting ends it (stop_meeting blocks -> run in a thread)
+                threading.Thread(target=self.stop_meeting, daemon=True).start()
+                return "meeting stopping"
             if self.state == PROCESSING:
                 return "busy"
             if self.state == RECORDING:

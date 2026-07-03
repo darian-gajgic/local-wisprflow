@@ -72,6 +72,36 @@ first logout/in, `ydotoold` can't type yet, so results are **copied to the clipb
 - Press it **again** to stop → it transcribes, cleans up, and types the result into the focused app.
 - `./wf-toggle status` shows `idle` / `recording` / `processing`. `./wf-toggle cancel` aborts a recording.
 
+## Meeting mode (dual-channel transcription)
+
+Transcribes a call with **speaker separation**, for meetings you're allowed to record:
+
+1. Press your hotkey → the listening pill appears with a **"👥 Meeting"** button.
+2. Click **Meeting** → it starts capturing two streams and writes a live transcript to
+   `~/wf-meetings/meeting-<timestamp>.md`:
+   ```
+   Client: <what the other side said>
+
+   Me: <what you said>
+   ```
+3. Press your hotkey again to **stop** and finalize the file.
+
+How it works: the **microphone** = "Me" and the **default output sink's `.monitor`** (whatever is
+playing — the Zoom/Teams call) = "Client", both captured via **`ffmpeg -f pulse`**. (This matters:
+`sounddevice` hangs on monitor sources here, and `pw-record --target <sink>` silently falls back
+to the mic for **Bluetooth** sinks — so both channels would record your voice. `ffmpeg`'s pulse
+`.monitor` input works for ALSA *and* Bluetooth.) Each stream is segmented on silence (windowed
+energy VAD), transcribed **faithfully** (no LLM rewrite) by the shared WhisperModel behind
+`model_lock`, and appended live. Speaker labels come from the source channel — no diarization ML.
+
+> **Use headphones.** With the client's audio in your earbuds (not the speaker), the mic never
+> hears them, so the two streams are cleanly separated. On **speakers** the mic re-captures the
+> client (bleed); a dedup guard keeps the clean "Client" copy, but headphones are the happy path.
+> Set your earbuds as the default output before starting — meeting mode follows the default sink.
+
+Tunables: `meeting_dir`, `meeting_vad_floor` (speech threshold — raise if your speech gets split,
+lower if quiet speech is missed), `meeting_silence_ms`, `meeting_beam_size`.
+
 ## Tuning (`~/.config/wisprflow/config.json`)
 
 Copy `config.example.json` there and edit. Common knobs:

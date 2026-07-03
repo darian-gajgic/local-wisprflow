@@ -92,9 +92,10 @@ DEFAULTS = {
     ),
 
     # --- injection ---
-    # "type"  = ydotool emulates keystrokes (US layout only — mistypes on German/other layouts!)
-    # "paste" = wl-copy + a paste chord (layout-INDEPENDENT; correct on German QWERTZ). Recommended
-    #           on non-US layouts. "clipboard" = just copy, you paste yourself.
+    # "type"  = LAYOUT-AWARE typing (maps chars to the correct keycodes for your XKB layout via
+    #           libxkbcommon) — correct on any layout AND works in every app (terminal or GUI) with
+    #           no paste chord. Recommended. "paste" = wl-copy + a paste chord (needs the right chord
+    #           per app: ctrl+v for GUIs, ctrl+shift+v for terminals). "clipboard" = just copy.
     "inject_method": "type",
     "paste_chord": "ctrl+v",          # ctrl+v | ctrl+shift+v (terminals) | shift+insert
     "ydotool_bin": "ydotool",
@@ -181,6 +182,8 @@ class Daemon:
         self._shutdown_requested = False
         self._overlay = None  # the listening-overlay subprocess (or None)
         self._meeting = None  # active MeetingSession (or None)
+        self._charmap = None      # cached char->keycode map for layout-aware typing
+        self._charmap_key = None  # (layout, variant) the cached map was built for
 
     # -- model ----------------------------------------------------------------
     def _make_model(self, device: str, compute_type: str):
@@ -382,6 +385,16 @@ class Daemon:
                 break
         return t
 
+    def _get_charmap(self):
+        """Char->keycode map for the CURRENT XKB layout, rebuilt if the layout changed."""
+        import wf_layout
+        key = wf_layout.get_current_layout()
+        if self._charmap is None or self._charmap_key != key:
+            self._charmap = wf_layout.build_charmap(*key)
+            self._charmap_key = key
+            log(f"typing: layout {key[0]}+{key[1] or ''} ({len(self._charmap)} chars mapped)")
+        return self._charmap
+
     # -- injection ------------------------------------------------------------
     def inject(self, text: str) -> str:
         """Insert `text`; returns the method actually used ('type'/'paste'/'clipboard'/'')."""
@@ -411,9 +424,18 @@ class Daemon:
                 time.sleep(0.05)  # let the clipboard manager register the new selection
                 subprocess.run([cfg["ydotool_bin"], "key", *chord], env=env, check=False)
                 return "paste"
-            # default: type
-            subprocess.run([cfg["ydotool_bin"], "type", "--key-delay", str(cfg["key_delay_ms"]),
-                            "--", text], env=env, check=False)
+            # default: type — LAYOUT-AWARE. We map each character to the (evdev keycode, level)
+            # that produces it under the user's actual XKB layout and emit those raw codes, so
+            # the text lands correctly in EVERY app (terminal or GUI) with no paste chord and no
+            # clipboard use. (Plain `ydotool type` assumes US layout and mistypes on e.g. German.)
+            import wf_layout
+            events, skipped = wf_layout.key_events(self._get_charmap(), text)
+            if skipped:
+                log(f"typing: skipped unmappable char(s): {skipped[:8]}")
+            delay = str(cfg.get("key_delay_ms", 4))
+            for i in range(0, len(events), 400):   # chunk to keep argv sane
+                subprocess.run([cfg["ydotool_bin"], "key", "--key-delay", delay]
+                               + events[i:i + 400], env=env, check=False)
             return "type"
         except FileNotFoundError as e:
             log(f"injection tool missing: {e}. Copying to clipboard instead.")

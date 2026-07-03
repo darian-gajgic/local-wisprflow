@@ -15,12 +15,14 @@ This box shares its **12 GB GPU with a resident 14B research harness (~10 GB VRA
 Ollama with `OLLAMA_KV_CACHE_TYPE=q4_0`. Two consequences drove the design — both verified
 empirically during the build:
 
-- **ASR is adaptive (`asr_device: "auto"`).** A CPU model stays warm always; a monitor thread
-  (polls `nvidia-smi`) runs `large-v3` on the **GPU** (~0.3 s) whenever no big LLM is loaded
-  there, and demotes it to **CPU** (releasing its VRAM) the moment a big model (the harness's
-  14B, one ~9 GB process) appears. So: harness idle → fast GPU ASR; harness active → whisper
-  yields the GPU. Switches never block dictation (the CPU model covers the gap). `wf-toggle
-  ping` shows `auto(cuda)` / `auto(cpu)`.
+- **ASR is adaptive + power-aware (`asr_device: "auto"`).** A CPU model stays warm always. On
+  **dictation activity**, whisper is promoted to the **GPU** (`large-v3`, ~0.3 s) — the load runs
+  *while you speak*, so it's ready by the time you stop. It's demoted back to **CPU** (freeing its
+  VRAM) when (a) the harness's 14B appears on the GPU, or (b) there's been **no dictation for
+  `gpu_idle_timeout_s` (default 5 min)** — so the dGPU can auto-suspend to **D3cold (0 W)** and save
+  battery. Switches never block dictation (the warm CPU model covers the gap). To avoid *waking* a
+  sleeping dGPU, the monitor detects the harness via Ollama `/api/ps` (HTTP) while idle and only
+  runs `nvidia-smi` while whisper is already on the GPU. `wf-toggle ping` shows `auto(cuda)`/`auto(cpu)`.
 - **Cleanup uses `qwen2.5:3b` on a dedicated, isolated Ollama** (`wf-cleanup-llm.service`, port
   **11435**, own models dir, **f16 KV cache**). The system Ollama's `q4_0` cache garbles small
   models, but this second instance doesn't inherit it — so a fast 3B cleans up correctly in

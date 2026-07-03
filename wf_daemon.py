@@ -56,7 +56,12 @@ DEFAULTS = {
     "asr_auto_other_vram_mib": 5000,  # auto: if any OTHER single GPU process holds > this many
                                       # MiB (i.e. a big LLM like the 14B), whisper -> CPU. Small
                                       # models (3B cleaner ~2GB, the agent ~2GB) stay below it.
-    "asr_auto_poll_secs": 6,          # auto: how often to re-check GPU occupancy
+    "asr_auto_poll_secs": 6,          # auto: how often to re-check GPU occupancy (while on GPU)
+    "gpu_idle_timeout_s": 300,        # auto: after this long with no dictation, unload whisper from
+                                      # the GPU so the dGPU can auto-suspend (D3cold, 0W) to save power
+    "harness_ollama_url": "http://localhost:11434",  # system Ollama — checked via /api/ps (an HTTP
+                                      # call, NOT nvidia-smi) to detect the harness's 14B without
+                                      # waking the sleeping dGPU
     "language": "en",                 # None (or "") => auto-detect
     "beam_size": 5,
     "initial_prompt": "",             # bias vocabulary: names/jargon, e.g. "Ollama, ctranslate2, ..."
@@ -178,6 +183,8 @@ class Daemon:
         self._gpu_model = None
         self.active_device = None
         self.model_lock = threading.Lock()  # guards model swaps vs. an in-flight transcription
+        self._last_activity = 0.0           # monotonic time of the last dictation (for idle-unload)
+        self._wake_monitor = threading.Event()  # nudges the auto monitor to re-evaluate now
         self._srv = None
         self._shutdown_requested = False
         self._overlay = None  # the listening-overlay subprocess (or None)
@@ -258,15 +265,60 @@ class Daemon:
             log(f"gpu occupancy query failed: {e!r}")
             return -1
 
+    def mark_activity(self) -> None:
+        """Record dictation activity (record-start / a transcription) and wake the monitor so it
+        promotes whisper to the GPU promptly (and resets the idle-unload timer)."""
+        self._last_activity = time.monotonic()
+        self._wake_monitor.set()
+
+    def _harness_loaded(self) -> bool:
+        """True if the system Ollama (the harness) has a big (~14B) model resident. Uses /api/ps —
+        an HTTP call, NOT nvidia-smi — so it never wakes a sleeping dGPU."""
+        import requests
+        big = int(self.cfg.get("asr_auto_other_vram_mib", 5000)) * 1024 * 1024
+        try:
+            r = requests.get(f"{self.cfg['harness_ollama_url']}/api/ps", timeout=2)
+            for m in r.json().get("models", []):
+                if (m.get("size_vram") or m.get("size") or 0) > big:
+                    return True
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+    def _demote_to_cpu(self, why: str) -> None:
+        with self.model_lock:
+            self.asr = self._cpu_model
+            self.active_device, self.asr_device = "cpu", "auto(cpu)"
+            self._gpu_model = None
+        gc.collect()   # free the GPU VRAM -> dGPU can auto-suspend (D3cold) if nothing else uses it
+        log(f"auto: {why} -> whisper on CPU (GPU model released)")
+
     def _asr_monitor(self) -> None:
+        """Activity-driven GPU/CPU placement:
+          * whisper on the GPU only while there is RECENT dictation activity and no big LLM there;
+          * demote to CPU when the harness's 14B appears OR after `gpu_idle_timeout_s` idle, freeing
+            VRAM so the dGPU can sleep (0 W);
+          * a warm CPU model is always kept, so a transcription is never blocked.
+        Crucially, while whisper is OFF the GPU we detect the harness via Ollama /api/ps (HTTP) and
+        never call nvidia-smi, so we don't keep waking a sleeping dGPU."""
         cfg = self.cfg
         threshold = int(cfg.get("asr_auto_other_vram_mib", 5000))
         poll = max(2, int(cfg.get("asr_auto_poll_secs", 6)))
+        idle_timeout = int(cfg.get("gpu_idle_timeout_s", 300))
         while not self._shutdown_requested:
-            big = self._gpu_biggest_other_mib()
-            if big >= 0:
-                want_gpu = big < threshold  # no big LLM present -> GPU is ours to use
-                if want_gpu and self.active_device != "cuda":
+            idle = (time.monotonic() - self._last_activity) > idle_timeout
+            if self.active_device == "cuda":
+                # dGPU is already awake (whisper resident) -> nvidia-smi is free to poll.
+                big = self._gpu_biggest_other_mib()
+                if big >= threshold:
+                    self._demote_to_cpu(f"big model on GPU ({big} MiB) — yielding VRAM")
+                elif idle:
+                    self._demote_to_cpu(f"idle >{idle_timeout}s — powering down GPU")
+                wait = float(poll)
+            else:
+                # whisper is on CPU; the dGPU may be ASLEEP. Only promote when there's recent
+                # activity AND the harness isn't on the GPU — and detect that via HTTP, not nvidia-smi.
+                if not idle and not self._harness_loaded():
                     try:
                         gpu = self._make_model("cuda", cfg["asr_gpu_compute_type"])
                     except Exception as e:  # noqa: BLE001
@@ -276,15 +328,10 @@ class Daemon:
                         with self.model_lock:
                             self._gpu_model, self.asr = gpu, gpu
                             self.active_device, self.asr_device = "cuda", "auto(cuda)"
-                        log(f"auto: no big model on GPU (biggest other {big} MiB) -> whisper on GPU (fast)")
-                elif not want_gpu and self.active_device != "cpu":
-                    with self.model_lock:
-                        self.asr = self._cpu_model
-                        self.active_device, self.asr_device = "cpu", "auto(cpu)"
-                        self._gpu_model = None
-                    gc.collect()  # hand the GPU model's VRAM back to the harness
-                    log(f"auto: big model on GPU (biggest other {big} MiB) -> whisper on CPU (yield VRAM)")
-            time.sleep(poll)
+                        log("auto: active + GPU free -> whisper on GPU (fast)")
+                wait = 30.0 if idle else float(poll)
+            self._wake_monitor.wait(timeout=wait)
+            self._wake_monitor.clear()
 
     # -- audio capture --------------------------------------------------------
     def record(self) -> np.ndarray:
@@ -327,6 +374,7 @@ class Daemon:
     # -- ASR ------------------------------------------------------------------
     def transcribe(self, audio: np.ndarray) -> str:
         cfg = self.cfg
+        self.mark_activity()   # keep whisper on the GPU while dictation is happening
         if audio.size < int(0.2 * cfg["sample_rate"]):
             return ""
         t0 = time.time()
@@ -608,6 +656,7 @@ class Daemon:
             self.state = RECORDING
             self.stop_event.clear()
             self.cancel_flag = False
+            self.mark_activity()   # promote whisper to GPU now, while you speak (auto mode)
             try:
                 threading.Thread(target=self.run_session, daemon=True).start()
             except Exception:  # e.g. "can't start new thread" under resource pressure

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Launcher for the wisprflow daemon: sets the CUDA library search path (so
+# ctranslate2 finds cublas/cudnn from the venv wheels) and the ydotool socket,
+# then execs the daemon under the project venv's Python.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV="$HERE/.venv"
+SP="$VENV/lib/python3.12/site-packages"
+
+export LD_LIBRARY_PATH="$SP/nvidia/cublas/lib:$SP/nvidia/cudnn/lib:${LD_LIBRARY_PATH:-}"
+export YDOTOOL_SOCKET="${YDOTOOL_SOCKET:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/.ydotool_socket}"
+# keep HF from making auth-warning network calls when the model is already cached
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+
+exec "$VENV/bin/python" "$HERE/wf_daemon.py" "$@"

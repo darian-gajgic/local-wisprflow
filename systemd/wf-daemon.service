@@ -1,0 +1,16 @@
+[Unit]
+Description=local-wisprflow dictation daemon (faster-whisper + Ollama cleanup)
+PartOf=graphical-session.target
+After=graphical-session.target ydotool.service
+Wants=ydotool.service
+
+[Service]
+Type=simple
+ExecStart=/home/sinep/local-wisprflow/wf-run
+Restart=on-failure
+RestartSec=3
+# model is cached; skip HuggingFace network round-trips on load
+Environment=HF_HUB_OFFLINE=1
+
+[Install]
+WantedBy=default.target

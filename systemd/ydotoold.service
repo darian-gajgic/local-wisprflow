@@ -1,0 +1,16 @@
+[Unit]
+Description=ydotoold — virtual uinput device daemon (Wayland text injection for wisprflow)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+# Runs as your user (needs the 'input' group + the 99-uinput.rules udev rule from
+# install-system.sh so /dev/uinput is group-writable). Socket path matches wf-run's
+# YDOTOOL_SOCKET (%t = $XDG_RUNTIME_DIR).
+ExecStart=/usr/bin/ydotoold -p %t/.ydotool_socket -P 0660
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

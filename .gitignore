@@ -1,0 +1,11 @@
+# Python env (rebuilt via scripts_install_venv.sh / uv)
+.venv/
+__pycache__/
+*.pyc
+
+# scratch logs and test data
+*.log
+.testdata/
+
+# local runtime
+*.sock

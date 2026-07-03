@@ -1,0 +1,15 @@
+[Unit]
+Description=wisprflow key listener (evdev trigger: KEY_PRESENTATION -> dictation toggle)
+PartOf=graphical-session.target
+After=graphical-session.target wf-daemon.service
+Wants=wf-daemon.service
+
+[Service]
+Type=simple
+Environment=WF_KEYCODE=425
+ExecStart=/home/sinep/local-wisprflow/.venv/bin/python /home/sinep/local-wisprflow/wf-keylistener.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

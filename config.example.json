@@ -1,0 +1,27 @@
+{
+  "asr_model": "large-v3",
+  "asr_device": "auto",
+  "asr_compute_type": "int8",
+  "asr_gpu_compute_type": "int8_float16",
+  "language": "en",
+  "beam_size": 5,
+  "initial_prompt": "",
+
+  "auto_stop": false,
+  "vad_rms_threshold": 0.010,
+  "silence_ms": 900,
+  "max_seconds": 120,
+
+  "llm_enable": true,
+  "ollama_url": "http://localhost:11435",
+  "llm_model": "qwen2.5:3b",
+  "llm_keep_alive": "5m",
+  "llm_temperature": 0.2,
+
+  "inject_method": "paste",
+  "paste_chord": "ctrl+v",
+  "trailing_space": true,
+
+  "overlay": true,
+  "notify": false
+}

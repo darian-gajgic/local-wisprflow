@@ -180,6 +180,7 @@ class MeetingSession:
                 continue
             if audio.size < int(0.2 * SR):
                 continue
+            self.d.mark_activity()   # keep whisper on the GPU during the meeting (auto mode)
             t0 = time.time()
             try:
                 with self.d.model_lock:

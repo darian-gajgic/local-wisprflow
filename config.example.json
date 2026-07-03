@@ -22,6 +22,11 @@
   "paste_chord": "ctrl+v",
   "trailing_space": true,
 
+  "meeting_dir": "~/wf-meetings",
+  "meeting_vad_floor": 0.02,
+  "meeting_silence_ms": 700,
+  "meeting_beam_size": 3,
+
   "overlay": true,
   "notify": false
 }

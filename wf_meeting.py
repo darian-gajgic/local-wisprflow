@@ -86,13 +86,14 @@ class MeetingSession:
         self.header = f"# Meeting transcript — {datetime.datetime.now():%Y-%m-%d %H:%M}\n\n"
         self.turns = []
         self._flush()
+        client = sink + ".monitor"   # pulse-layer monitor name — works for ALSA AND Bluetooth
         self.log(f"meeting: -> {self.path}")
         self.log(f"meeting: Me={source}")
-        self.log(f"meeting: Client(monitor)={sink}")
+        self.log(f"meeting: Client={client}")
         self.threads = [
             threading.Thread(target=self._worker, daemon=True),
             threading.Thread(target=self._channel, args=(source, "Me"), daemon=True),
-            threading.Thread(target=self._channel, args=(sink, "Client"), daemon=True),
+            threading.Thread(target=self._channel, args=(client, "Client"), daemon=True),
         ]
         for t in self.threads:
             t.start()
@@ -120,13 +121,17 @@ class MeetingSession:
         sil_need = float(cfg.get("meeting_silence_ms", 700)) / 1000.0
         min_speech = float(cfg.get("meeting_min_speech_ms", 300)) / 1000.0
         maxseg = float(cfg.get("meeting_max_seg_s", 24))
+        # Capture via ffmpeg's PulseAudio input (pipewire-pulse). This uses the `.monitor`
+        # source name, which works for BOTH ALSA and Bluetooth sinks — unlike `pw-record
+        # --target <sink>`, which silently falls back to the default mic for Bluetooth
+        # monitors (that bug made both channels record the mic).
         try:
             proc = subprocess.Popen(
-                ["pw-record", "--target", target, "--rate", str(SR),
-                 "--channels", "1", "--format", "s16", "-"],
+                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+                 "-f", "pulse", "-i", target, "-ar", str(SR), "-ac", "1", "-f", "s16le", "-"],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         except Exception as e:  # noqa: BLE001
-            self.log(f"meeting: pw-record failed for {label}: {e!r}")
+            self.log(f"meeting: ffmpeg capture failed for {label}: {e!r}")
             return
         self.procs.append(proc)
         nbytes = BLOCK * 2

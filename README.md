@@ -86,9 +86,11 @@ Transcribes a call with **speaker separation**, for meetings you're allowed to r
    ```
 3. Press your hotkey again to **stop** and finalize the file.
 
-How it works: the **microphone** = "Me" and the **default output sink's monitor** (whatever is
-playing — the Zoom/Teams call) = "Client", both captured via `pw-record --target <node>`
-(sounddevice hangs on monitor sources here). Each stream is segmented on silence (windowed
+How it works: the **microphone** = "Me" and the **default output sink's `.monitor`** (whatever is
+playing — the Zoom/Teams call) = "Client", both captured via **`ffmpeg -f pulse`**. (This matters:
+`sounddevice` hangs on monitor sources here, and `pw-record --target <sink>` silently falls back
+to the mic for **Bluetooth** sinks — so both channels would record your voice. `ffmpeg`'s pulse
+`.monitor` input works for ALSA *and* Bluetooth.) Each stream is segmented on silence (windowed
 energy VAD), transcribed **faithfully** (no LLM rewrite) by the shared WhisperModel behind
 `model_lock`, and appended live. Speaker labels come from the source channel — no diarization ML.
 

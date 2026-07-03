@@ -18,8 +18,7 @@
   "llm_keep_alive": "5m",
   "llm_temperature": 0.2,
 
-  "inject_method": "paste",
-  "paste_chord": "ctrl+v",
+  "inject_method": "type",
   "trailing_space": true,
 
   "meeting_dir": "~/wf-meetings",

@@ -188,6 +188,7 @@ class Daemon:
         self._srv = None
         self._shutdown_requested = False
         self._overlay = None  # the listening-overlay subprocess (or None)
+        self._disp_env = {}   # cached DISPLAY/XAUTHORITY for the overlay (see _overlay_env)
         self._meeting = None  # active MeetingSession (or None)
         self._charmap = None      # cached char->keycode map for layout-aware typing
         self._charmap_key = None  # (layout, variant) the cached map was built for
@@ -494,13 +495,46 @@ class Daemon:
     def _overlay_path(self) -> str:
         return os.path.join(os.path.dirname(os.path.abspath(__file__)), "wf-overlay.py")
 
+    def _overlay_env(self) -> dict:
+        """Environment for the overlay subprocess, guaranteed to carry the X display.
+
+        systemd may start this daemon during early graphical-session bring-up —
+        BEFORE GNOME imports DISPLAY/XAUTHORITY into the user manager — so our own
+        os.environ can lack them, and the tkinter overlay then dies silently at
+        tk.Tk() ("no $DISPLAY") while dictation (ydotool socket) keeps working.
+        Pull the live values from the systemd user manager, which GNOME populates
+        at login. XAUTHORITY's filename carries a fresh random suffix every session,
+        so resolving it live — not hardcoding it — is what keeps the overlay working
+        across logouts and reboots.
+        """
+        env = os.environ.copy()
+        if env.get("DISPLAY") and env.get("XAUTHORITY"):
+            return env
+        if not self._disp_env:  # keep retrying until the manager has the vars
+            resolved = {}
+            try:
+                out = subprocess.run(
+                    ["systemctl", "--user", "show-environment"],
+                    capture_output=True, text=True, timeout=3).stdout
+                for line in out.splitlines():
+                    k, _, v = line.partition("=")
+                    if k in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY") and v:
+                        resolved[k] = v
+            except Exception as e:  # noqa: BLE001
+                log(f"overlay: could not resolve display env: {e!r}")
+            self._disp_env = resolved
+        for k, v in self._disp_env.items():
+            if not env.get(k):
+                env[k] = v
+        return env
+
     def _overlay_start(self, mode: str = "listening") -> None:
         if not self.cfg.get("overlay", True):
             return
         self._overlay_stop()
         try:
             self._overlay = subprocess.Popen(
-                [sys.executable, self._overlay_path(), mode],
+                [sys.executable, self._overlay_path(), mode], env=self._overlay_env(),
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:  # noqa: BLE001
             log(f"overlay start failed: {e!r}")
@@ -520,6 +554,7 @@ class Daemon:
         try:
             subprocess.Popen(
                 [sys.executable, self._overlay_path(), "done", (text or "Inserted")[:44]],
+                env=self._overlay_env(),
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:  # noqa: BLE001
             pass

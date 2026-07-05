@@ -30,6 +30,8 @@ empirically during the build:
   dictations, inserted paragraph breaks, and leaked "Sure, here is the corrected text:". Cleanup
   runs in **~0.8–1.3 s** using ~3.3 GB, and a deterministic sanitizer in `polish()` strips any
   stray preamble/newlines as a backstop. Dictation never touches the system Ollama or its 14B.
+  See **[docs/cleanup.md](docs/cleanup.md)** for the full cleanup-pipeline design, the two
+  failure modes it fixes, and the pattern-completion framing that keeps it transcribing.
 
 Net result: end-to-end **~0.9 s** after you stop talking, whisper yields the GPU to the harness
 on demand, and nothing disturbs the system Ollama service or its config.

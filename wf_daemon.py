@@ -58,8 +58,8 @@ DEFAULTS = {
                                       # MiB (i.e. a big LLM like the 14B), whisper -> CPU. Small
                                       # models (gemma3:4b cleaner ~3.3GB, the agent ~2GB) stay below it.
     "asr_auto_poll_secs": 6,          # auto: how often to re-check GPU occupancy (while on GPU)
-    "gpu_idle_timeout_s": 300,        # auto: after this long with no dictation, unload whisper from
-                                      # the GPU so the dGPU can auto-suspend (D3cold, 0W) to save power
+    "gpu_idle_timeout_s": 1800,       # auto: after this long (30 min) with no dictation, unload whisper
+                                      # from the GPU so the dGPU can auto-suspend (D3cold, 0W) to save power
     "harness_ollama_url": "http://localhost:11434",  # system Ollama — checked via /api/ps (an HTTP
                                       # call, NOT nvidia-smi) to detect the harness's 14B without
                                       # waking the sleeping dGPU
@@ -284,6 +284,12 @@ PASTE_CHORDS = {
     "shift+insert": ["42:1", "110:1", "110:0", "42:0"],
 }
 
+# ---------------------------------------------------------------------------
+# Language cycle (EN -> DE -> RO -> EN). Session-only state, never persisted.
+# ---------------------------------------------------------------------------
+LANG_CYCLE = ("en", "de", "ro")
+LANG_LABEL = {"en": "EN", "de": "DE", "ro": "RO"}   # short labels for the overlay button
+
 
 class Daemon:
     def __init__(self, cfg: dict):
@@ -306,6 +312,9 @@ class Daemon:
         self._disp_env = {}   # cached DISPLAY/XAUTHORITY for the overlay (see _overlay_env)
         self._meeting = None  # active MeetingSession (or None)
         self.note_mode = bool(cfg.get("note_mode", False))  # NoteMode: one sentence per line
+        # Session-only ASR language (NOT persisted to disk/config). Resets to "en" on every
+        # process start, regardless of config.json — English is the default on each restart.
+        self.session_lang = "en"
         self._charmap = None      # cached char->keycode map for layout-aware typing
         self._charmap_key = None  # (layout, variant) the cached map was built for
 
@@ -489,6 +498,12 @@ class Daemon:
         return audio
 
     # -- ASR ------------------------------------------------------------------
+    def _eff_language(self) -> str:
+        """The effective language for transcription. session_lang is always set
+        (initialized in __init__, never read from disk), so this is mostly
+        defensive — but it lets a future caller override cleanly."""
+        return self.session_lang or self.cfg.get("language") or "en"
+
     def transcribe(self, audio: np.ndarray) -> str:
         cfg = self.cfg
         self.mark_activity()   # keep whisper on the GPU while dictation is happening
@@ -497,15 +512,38 @@ class Daemon:
         t0 = time.time()
         # hold model_lock so the auto-mode monitor can't swap/free the model mid-transcription
         with self.model_lock:
+            # MID-TRANSCRIPTION LANGUAGE SWITCHING:
+            # Capture the language right before the model call. After the call returns, re-check
+            # session_lang — if the user clicked the language button WHILE the model was processing
+            # (the socket handler runs on a separate thread and mutates session_lang), we discard
+            # the stale-language result and re-run with the new language. This guarantees the
+            # transcript the user sees reflects the language that was active when transcription
+            # completed, not the one that was active when it started. (Aborting an in-flight CTranslate2
+            # call is not feasible, so we accept at most one wasted decode; the re-run is cheap.)
+            lang_before = self._eff_language()
             segments, info = self.asr.transcribe(
                 audio,
-                language=cfg["language"] or None,
+                language=lang_before or None,
                 beam_size=cfg["beam_size"],
                 vad_filter=cfg["vad_filter"],
                 condition_on_previous_text=False,
                 initial_prompt=cfg["initial_prompt"] or None,
             )
             text = " ".join(s.text.strip() for s in segments).strip()
+            # Re-check: did the language change during the (blocking) model call?
+            lang_after = self._eff_language()
+            if lang_after != lang_before:
+                log(f"ASR language changed mid-transcription ({lang_before} -> {lang_after}); "
+                    f"re-running with new language (discarding stale result)")
+                segments, info = self.asr.transcribe(
+                    audio,
+                    language=lang_after or None,
+                    beam_size=cfg["beam_size"],
+                    vad_filter=cfg["vad_filter"],
+                    condition_on_previous_text=False,
+                    initial_prompt=cfg["initial_prompt"] or None,
+                )
+                text = " ".join(s.text.strip() for s in segments).strip()
         log(f"ASR [{self.active_device}] {time.time() - t0:.2f}s -> {text!r}")
         return text
 
@@ -678,6 +716,7 @@ class Daemon:
         self._overlay_stop()
         env = self._overlay_env()
         env["WF_NOTE_MODE"] = "1" if self.note_mode else "0"   # so the NoteMode button renders active
+        env["WF_LANG"] = self.session_lang                     # so the Language button shows the active lang
         try:
             self._overlay = subprocess.Popen(
                 [sys.executable, self._overlay_path(), mode], env=env,
@@ -825,6 +864,8 @@ class Daemon:
             return self._cmd_meeting()
         if cmd == "note":
             return self._toggle_note()
+        if cmd == "lang":
+            return self._cycle_lang()
         if cmd in ("toggle", "start", "stop"):
             return self._toggle(cmd)
         return f"unknown command: {cmd}"
@@ -836,6 +877,21 @@ class Daemon:
             state = self.note_mode
         log(f"note mode {'ON' if state else 'OFF'}")
         return "note on" if state else "note off"
+
+    def _cycle_lang(self) -> str:
+        """Advance the session ASR language: en -> de -> ro -> en.
+        Session-only, never persisted to disk/config. The new language takes
+        effect for the next transcription AND any in-flight one (see the
+        re-check logic in transcribe())."""
+        with self.lock:
+            cur = self.session_lang
+            if cur not in LANG_CYCLE:
+                cur = "en"
+            i = LANG_CYCLE.index(cur)
+            self.session_lang = LANG_CYCLE[(i + 1) % len(LANG_CYCLE)]
+            new = self.session_lang
+        log(f"session language -> {new}")
+        return f"lang {new}"
 
     def _toggle(self, cmd: str) -> str:
         with self.lock:

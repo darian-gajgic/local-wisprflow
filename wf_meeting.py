@@ -185,7 +185,7 @@ class MeetingSession:
             try:
                 with self.d.model_lock:
                     segments, _ = self.d.asr.transcribe(
-                        audio, language=cfg["language"] or None,
+                        audio, language=self.d._eff_language() or None,
                         beam_size=int(cfg.get("meeting_beam_size", 3)),
                         vad_filter=False, condition_on_previous_text=False)
                     text = " ".join(s.text.strip() for s in segments).strip()

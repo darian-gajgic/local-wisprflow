@@ -6,8 +6,8 @@ After=graphical-session.target
 Type=simple
 # A SECOND, fully-isolated Ollama: own port, own models dir, and a NORMAL (f16) KV cache.
 # The system Ollama uses q4_0 KV cache (for the harness's 14B) which garbles small models;
-# this instance doesn't, so a fast 3B produces correct cleanup. Nothing here touches the
-# system ollama.service, its models, or its config.
+# this instance doesn't, so a small model (gemma3:4b) produces correct cleanup. Nothing here
+# touches the system ollama.service, its models, or its config.
 Environment=OLLAMA_HOST=127.0.0.1:11435
 Environment=OLLAMA_MODELS=%h/.ollama-wf/models
 Environment=OLLAMA_KV_CACHE_TYPE=f16

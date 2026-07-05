@@ -17,12 +17,12 @@ systemctl --user daemon-reload
 # ydotool.service is shipped + auto-enabled by the apt package; make sure it's enabled.
 systemctl --user enable ydotool.service >/dev/null 2>&1 || true
 # Isolated cleanup LLM (own port 11435, f16 KV cache) + its small model — started BEFORE
-# the daemon that uses it. This is why 7B/3B don't garble here: the system Ollama's q4_0
-# cache is NOT inherited by this instance.
+# the daemon that uses it. This is why a small model doesn't garble here: the system Ollama's
+# q4_0 cache is NOT inherited by this instance.
 systemctl --user enable --now wf-cleanup-llm.service
-if ! OLLAMA_HOST=127.0.0.1:11435 ollama list 2>/dev/null | grep -q "qwen2.5:3b"; then
-  echo "pulling qwen2.5:3b into the isolated cleanup Ollama (~2GB, one-time)..."
-  OLLAMA_HOST=127.0.0.1:11435 ollama pull qwen2.5:3b || echo "  (pull failed; run it manually later)"
+if ! OLLAMA_HOST=127.0.0.1:11435 ollama list 2>/dev/null | grep -q "gemma3:4b"; then
+  echo "pulling gemma3:4b into the isolated cleanup Ollama (~3.3GB, one-time)..."
+  OLLAMA_HOST=127.0.0.1:11435 ollama pull gemma3:4b || echo "  (pull failed; run it manually later)"
 fi
 systemctl --user enable --now wf-daemon.service
 # key listener: triggers dictation from KEY_PRESENTATION (a special key GNOME can't bind).

@@ -37,6 +37,8 @@ import tkinter.font as tkfont
 MODE = sys.argv[1] if len(sys.argv) > 1 else "listening"
 TEXT = sys.argv[2] if len(sys.argv) > 2 else ""
 NOTE_ON = os.environ.get("WF_NOTE_MODE") == "1"
+LANG = os.environ.get("WF_LANG", "en")          # "en" | "de" | "ro" — active session language
+LANG_LABEL = {"en": "🌐 EN", "de": "🌐 DE", "ro": "🌐 RO"}
 PREVIEW = os.environ.get("WF_OVERLAY_PREVIEW")  # dev: postscript path, no live window
 
 # ---- palette (dark, glassy — sits with the desktop's Win7-Aero theme) -------------------
@@ -136,7 +138,7 @@ def round_rect(c, x1, y1, x2, y2, r, **kw):
 
 # ---- per-mode base sizes (unscaled units) -----------------------------------------------
 if MODE == "listening":
-    BASE_W, BASE_H = 372, 86
+    BASE_W, BASE_H = 372, 123
 elif MODE == "meeting":
     BASE_W, BASE_H = 264, 62
 elif MODE == "processing":
@@ -274,6 +276,7 @@ elif MODE == "processing":
 # =========================================================================================
 else:
     note_on = [NOTE_ON]   # mutable so the click handler can flip it
+    lang = [LANG if LANG in LANG_LABEL else "en"]   # active language (mutable for click handler)
 
     PADX = S(14)
     wave_w = S(46)
@@ -286,10 +289,11 @@ else:
     bgap = S(9)
     bx2 = W - PADX
     bx1 = bx2 - btn_w
-    stack_h = btn_h * 2 + bgap
+    stack_h = btn_h * 3 + bgap * 2
     top = (H - stack_h) // 2
     meet_y1, meet_y2 = top, top + btn_h
     note_y1, note_y2 = top + btn_h + bgap, top + btn_h + bgap + btn_h
+    lang_y1, lang_y2 = top + 2 * (btn_h + bgap), top + 2 * (btn_h + bgap) + btn_h
 
     # IMPORTANT: the button/label items are created ONCE here and only ever RECONFIGURED
     # (itemconfigure) on hover/toggle — never deleted+recreated. Recreating an item that the
@@ -316,6 +320,10 @@ else:
                width=max(1, S(1)), tags=("note", "note_bg"))
     cv.create_text((bx1 + bx2) // 2, (note_y1 + note_y2) // 2, text="", font=F_BTN,
                    tags=("note", "note_tx"))
+    round_rect(cv, bx1, lang_y1, bx2, lang_y2, S(9), fill=BTN, outline=BTN_BRD,
+               width=max(1, S(1)), tags=("lang", "lang_bg"))
+    cv.create_text((bx1 + bx2) // 2, (lang_y1 + lang_y2) // 2, text="", font=F_BTN,
+                   tags=("lang", "lang_tx"))
 
     def set_meet(hover=False):
         cv.itemconfigure("meet_bg", fill=(BTN_HOV if hover else BTN))
@@ -326,6 +334,14 @@ else:
         cv.itemconfigure("note_bg", fill=fill, outline=(NOTE_BRD if on else BTN_BRD))
         cv.itemconfigure("note_tx", text=("📝  NoteMode  •ON" if on else "📝  NoteMode"),
                          fill=(FG if on else SUBTLE))
+
+    def set_lang(hover=False):
+        cur = lang[0]
+        active = cur != "en"   # EN is the default — only DE/RO get accent treatment
+        fill = (NOTE_HOV if hover else NOTE_BG) if active else (BTN_HOV if hover else BTN)
+        cv.itemconfigure("lang_bg", fill=fill, outline=(NOTE_BRD if active else BTN_BRD))
+        cv.itemconfigure("lang_tx", text=LANG_LABEL.get(cur, "🌐 EN"),
+                         fill=(FG if active else SUBTLE))
 
     def on_meeting(*_):
         send_cmd(b"meeting")
@@ -342,9 +358,22 @@ else:
         set_note(hover=True)
         set_label()
 
+    def on_lang(*_):
+        reply = send_cmd(b"lang")
+        # reply looks like "lang de"
+        new = reply.split()[-1] if reply.startswith("lang ") else None
+        if new in LANG_LABEL:
+            lang[0] = new
+        else:
+            # optimistic fallback: cycle locally
+            order = ["en", "de", "ro"]
+            lang[0] = order[(order.index(lang[0]) + 1) % len(order)]
+        set_lang(hover=True)
+
     set_label()
     set_meet()
     set_note()
+    set_lang()
 
     cv.tag_bind("meet", "<Button-1>", on_meeting)
     cv.tag_bind("meet", "<Enter>", lambda e: (set_meet(True), cv.config(cursor="hand2")))
@@ -352,6 +381,9 @@ else:
     cv.tag_bind("note", "<Button-1>", on_note)
     cv.tag_bind("note", "<Enter>", lambda e: (set_note(True), cv.config(cursor="hand2")))
     cv.tag_bind("note", "<Leave>", lambda e: (set_note(False), cv.config(cursor="")))
+    cv.tag_bind("lang", "<Button-1>", on_lang)
+    cv.tag_bind("lang", "<Enter>", lambda e: (set_lang(True), cv.config(cursor="hand2")))
+    cv.tag_bind("lang", "<Leave>", lambda e: (set_lang(False), cv.config(cursor="")))
 
     # ---- animated waveform ----
     nb = 7

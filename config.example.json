@@ -14,9 +14,9 @@
 
   "llm_enable": true,
   "ollama_url": "http://localhost:11435",
-  "llm_model": "qwen2.5:3b",
+  "llm_model": "gemma3:4b",
   "llm_keep_alive": "5m",
-  "llm_temperature": 0.2,
+  "llm_temperature": 0.0,
 
   "inject_method": "type",
   "trailing_space": true,

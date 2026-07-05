@@ -6,7 +6,7 @@ design entirely on this machine.
 
 ```
 mic ─▶ record (push-to-talk toggle) ─▶ faster-whisper ASR ─▶ Ollama LLM cleanup ─▶ type into focused app
-        wf-toggle hotkey                (large-v3, CPU)        (qwen2.5:14b)         (ydotool)
+        wf-toggle hotkey                (large-v3, CPU)         (gemma3:4b)          (ydotool)
 ```
 
 ## Why these specific choices on THIS machine
@@ -23,11 +23,13 @@ empirically during the build:
   battery. Switches never block dictation (the warm CPU model covers the gap). To avoid *waking* a
   sleeping dGPU, the monitor detects the harness via Ollama `/api/ps` (HTTP) while idle and only
   runs `nvidia-smi` while whisper is already on the GPU. `wf-toggle ping` shows `auto(cuda)`/`auto(cpu)`.
-- **Cleanup uses `qwen2.5:3b` on a dedicated, isolated Ollama** (`wf-cleanup-llm.service`, port
+- **Cleanup uses `gemma3:4b` on a dedicated, isolated Ollama** (`wf-cleanup-llm.service`, port
   **11435**, own models dir, **f16 KV cache**). The system Ollama's `q4_0` cache garbles small
-  models, but this second instance doesn't inherit it — so a fast 3B cleans up correctly in
-  **~0.3–0.5 s** (vs 1.3–9.6 s sharing the 14B) using ~2 GB. Dictation no longer touches the
-  14B at all; the system Ollama and the harness are left completely alone.
+  models, but this second instance doesn't inherit it. gemma3:4b (temperature 0) follows the
+  "clean up, don't rewrite" instruction far more faithfully than a 3B — which summarized long
+  dictations, inserted paragraph breaks, and leaked "Sure, here is the corrected text:". Cleanup
+  runs in **~0.8–1.3 s** using ~3.3 GB, and a deterministic sanitizer in `polish()` strips any
+  stray preamble/newlines as a backstop. Dictation never touches the system Ollama or its 14B.
 
 Net result: end-to-end **~0.9 s** after you stop talking, whisper yields the GPU to the harness
 on demand, and nothing disturbs the system Ollama service or its config.
@@ -42,16 +44,16 @@ on demand, and nothing disturbs the system Ollama service or its config.
 | `wf-keylistener.py` | evdev listener: fires `wf-toggle` on a special key GNOME can't bind (here `KEY_PRESENTATION`). |
 | `wf_meeting.py` | Meeting mode: dual-channel (mic + system-audio monitor) speaker-labeled transcription. |
 | `wf_layout.py` | Layout-aware typing: maps chars → correct keycodes for the active XKB layout (libxkbcommon). |
-| `systemd/*.service` | User services (autostart): `wf-daemon`, `wf-cleanup-llm` (isolated 3B Ollama), `wf-keylistener`, `ydotool`. |
+| `systemd/*.service` | User services (autostart): `wf-daemon`, `wf-cleanup-llm` (isolated cleanup Ollama, `gemma3:4b`), `wf-keylistener`, `ydotool`. |
 | `install-system.sh` | **(sudo)** apt: `libportaudio2 ydotool wl-clipboard` + `/dev/uinput` udev rule + `input` group. |
-| `install-services.sh` | Start the user services (no sudo) + pull `qwen2.5:3b` into the isolated cleanup Ollama. |
+| `install-services.sh` | Start the user services (no sudo) + pull `gemma3:4b` into the isolated cleanup Ollama. |
 | `set-hotkey.sh` / `grab-key-gui.py` / `grab-key-evdev.py` | Bind a GNOME shortcut, or capture a special hardware key. |
 | `config.example.json` | Copy to `~/.config/wisprflow/config.json` to override defaults. |
 
 ## Setup (from scratch)
 
 The Python env is already built (`.venv`, Python 3.12, faster-whisper + CUDA-12 wheels) and
-`qwen2.5:14b` / `large-v3` are already downloaded. Remaining steps:
+`gemma3:4b` (cleanup) / `large-v3` (ASR) are already downloaded. Remaining steps:
 
 ```bash
 # 1. system packages + uinput access  (needs: run `sudo -v` in your terminal first)
@@ -151,10 +153,10 @@ Copy `config.example.json` there and edit. Common knobs:
 
 ## Latency (measured here)
 
-For a spoken utterance, expect roughly **ASR (~0.47× its length) + cleanup (~1–7 s)** after you
-stop talking — e.g. a 6 s sentence ≈ 3 s ASR + a couple seconds cleanup. Cleanup is faster when
-the 14B is already warm from the harness, slower if it must load (~5–10 s cold) or is mid-inference
-for the harness (Ollama serializes requests per model).
+For a spoken utterance, expect roughly **ASR (~0.47× its length) + cleanup (~0.8–1.3 s)** after
+you stop talking — e.g. a 6 s sentence ≈ 3 s ASR + ~1 s cleanup. Cleanup runs on the isolated
+`gemma3:4b` (`:11435`) and is independent of the harness; it's slower only on the first call
+after the model idles out of memory (~2–4 s cold load).
 
 ## Notes / gotchas
 

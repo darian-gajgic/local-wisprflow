@@ -72,16 +72,47 @@ first logout/in, `ydotoold` can't type yet, so results are **copied to the clipb
 
 ## Usage
 
-- Press your hotkey → **recording** (a "🎙 Recording…" notification appears) → speak.
+- Press your hotkey → **recording** (an animated "Listening" pill appears) → speak.
 - Press it **again** to stop → it transcribes, cleans up, and types the result into the focused app.
 - `./wf-toggle status` shows `idle` / `recording` / `processing`. `./wf-toggle cancel` aborts a recording.
+
+The **Listening pill** (bottom-center of the primary monitor) has two mode buttons: **MeetingMode**
+and **NoteMode** (below). The pill is DPI-scaled and pinned to the primary monitor (it no longer
+mis-sizes or straddles the seam on a multi-monitor desktop).
+
+> **If your key press is sometimes "not registered":** on some laptops the trigger key
+> (`KEY_PRESENTATION` here) is reported by *several* input devices at once, so one physical press
+> emitted two key-downs → two toggles that cancelled out. `wf-keylistener` now **debounces**
+> (default 300 ms, `WF_DEBOUNCE_MS`) so duplicate emissions collapse into a single toggle.
+
+## NoteMode (one sentence per line)
+
+For longer notes, a single paragraph is hard to read. Turn on **NoteMode** and each dictation is
+written **one sentence per line** instead:
+
+1. Press your hotkey → the Listening pill appears → click **📝 NoteMode** (it lights up blue, "•ON").
+   Or run `./wf-toggle note` (toggles; prints `note on`/`note off`).
+2. Speak and stop as usual — the inserted text is broken at sentence boundaries, one per line, and
+   ends on a fresh line so the next note starts cleanly.
+3. NoteMode is a **persistent toggle** — it stays on for every dictation until you turn it off (or
+   set `"note_mode": true` in your config to default it on).
+
+Sentence splitting is **deterministic** (done in `format_notes()`, no LLM), so it works even when the
+cleanup LLM is unavailable — it relies on the punctuation Whisper already produces. Abbreviations
+(`Dr.`, `e.g.`, `z.B.`), initials, decimals, and standalone list markers (`1.`) don't trigger a line
+break, while a clause that merely ends in a number (`I scored 8.`) still splits.
+
+> **NoteMode types real Enter keys** (one per sentence line, `inject_method: "type"`). That's perfect
+> in a text editor / notes app, but in a **terminal or chat box** each newline submits the line — so
+> use NoteMode where newlines mean "new line", not "send". The pill shows **"NoteMode •ON"** while it's
+> active so you can tell at a glance.
 
 ## Meeting mode (dual-channel transcription)
 
 Transcribes a call with **speaker separation**, for meetings you're allowed to record:
 
-1. Press your hotkey → the listening pill appears with a **"👥 Meeting"** button.
-2. Click **Meeting** → it starts capturing two streams and writes a live transcript to
+1. Press your hotkey → the listening pill appears with a **"👥 MeetingMode"** button.
+2. Click **MeetingMode** → it starts capturing two streams and writes a live transcript to
    `~/wf-meetings/meeting-<timestamp>.md`:
    ```
    Client: <what the other side said>

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Wispr Flow (local)
+Comment=Start local dictation — brings up daemon, hotkey listener, cleanup LLM and typing service
+Exec=/home/sinep/local-wisprflow/wf-start
+Icon=audio-input-microphone
+Terminal=false
+Categories=Utility;Audio;
+Keywords=dictation;whisper;speech;voice;

@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# One-click stopper: shuts down the dictation stack (counterpart of wf-start).
+#
+# Stops the three wf services + any stray manually-launched daemon, freeing the
+# resources they hold (whisper model in RAM/VRAM, gemma3 cleanup LLM, hotkey grab).
+# ydotoold is left running: it's the apt package's own tiny user service, not ours.
+#
+# Services stay ENABLED, so dictation still autostarts at next login. For a
+# permanent stop use:  wf-stop --disable
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# keylistener first (no more toggles mid-stop), then daemon, then the LLM.
+SERVICES=(wf-keylistener.service wf-daemon.service wf-cleanup-llm.service)
+
+say() { echo "wf-stop: $*"; }
+
+notify() {  # notify <urgency> <title> <body>
+    command -v notify-send >/dev/null 2>&1 &&
+        notify-send --urgency="$1" --icon=audio-input-microphone --app-name="Wispr Flow" "$2" "$3" || true
+}
+
+systemctl --user stop "${SERVICES[@]}" 2>/dev/null
+
+if [ "${1:-}" = "--disable" ]; then
+    systemctl --user disable "${SERVICES[@]}" >/dev/null 2>&1
+    say "autostart disabled — dictation will NOT start at login (re-enable with wf-start)"
+fi
+
+# stray manually-launched daemons (a `wf-run` left in a terminal) die too
+strays="$(pgrep -f "$HERE/wf_daemon.py" 2>/dev/null || true)"
+if [ -n "$strays" ]; then
+    say "stopping manually-launched daemon (pid $strays)"
+    kill $strays 2>/dev/null
+    for _ in $(seq 1 50); do
+        kill -0 $strays 2>/dev/null || break
+        sleep 0.1
+    done
+    kill -0 $strays 2>/dev/null && kill -9 $strays 2>/dev/null
+fi
+
+# --- verify -----------------------------------------------------------------------
+fails=()
+for s in "${SERVICES[@]}"; do
+    ok=0
+    for _ in $(seq 1 20); do
+        st="$(systemctl --user is-active "$s" 2>/dev/null)"
+        [ "$st" = inactive ] || [ "$st" = failed ] && { ok=1; break; }
+        sleep 0.25
+    done
+    [ "$ok" = 1 ] || fails+=("$s")
+done
+pgrep -f "$HERE/wf_daemon.py" >/dev/null 2>&1 && fails+=("wf_daemon.py process")
+
+if [ "${#fails[@]}" -eq 0 ]; then
+    extra="Autostarts again at next login — or double-click Wispr Flow (start)."
+    [ "${1:-}" = "--disable" ] && extra="Autostart disabled — start again with the Wispr Flow icon."
+    say "all stopped"
+    notify normal "Dictation stopped" "$extra"
+    exit 0
+else
+    say "FAILED to stop: ${fails[*]}"
+    notify critical "Dictation stop FAILED" "Still running: ${fails[*]}"
+    exit 1
+fi

@@ -29,6 +29,19 @@ systemctl --user enable --now wf-daemon.service
 # Harmless if you use the GNOME shortcut instead; edit WF_KEYCODE in the unit to change the key.
 systemctl --user enable --now wf-keylistener.service
 
+# desktop launchers: double-clickable start/repair + stop entries (app menu + Desktop).
+# GNOME only launches .desktop files that are executable AND marked trusted.
+chmod +x "$HERE/wf-start" "$HERE/wf-stop"
+mkdir -p "$HOME/.local/share/applications"
+for d in wisprflow.desktop wisprflow-stop.desktop; do
+  cp "$HERE/$d" "$HOME/.local/share/applications/"
+  if [ -d "$HOME/Desktop" ]; then
+    cp "$HERE/$d" "$HOME/Desktop/"
+    chmod +x "$HOME/Desktop/$d"
+    gio set "$HOME/Desktop/$d" metadata::trusted true 2>/dev/null || true
+  fi
+done
+
 echo
 echo "wf-daemon service:"
 systemctl --user --no-pager status wf-daemon.service | head -6 || true

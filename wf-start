@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# One-click launcher: brings up the ENTIRE dictation stack and verifies it.
+#
+# This is the script to run (or double-click via wisprflow.desktop) when dictation
+# is dead. It is idempotent and self-healing:
+#   * installs the systemd user units if they're missing,
+#   * kills any manually-launched wf_daemon (e.g. a stray `wf-run` in a terminal) —
+#     it would fight the service over the control socket,
+#   * enable --now ALL FOUR services (ydotool, wf-cleanup-llm, wf-daemon,
+#     wf-keylistener), which also repairs them if something disabled them,
+#   * health-checks each piece and reports via desktop notification + stdout.
+#
+# Note: wf-run stays a thin daemon wrapper because wf-daemon.service ExecStart's it.
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+UNIT_DIR="$HOME/.config/systemd/user"
+SERVICES=(ydotool.service wf-cleanup-llm.service wf-daemon.service wf-keylistener.service)
+
+say() { echo "wf-start: $*"; }
+
+notify() {  # notify <urgency> <title> <body>
+    command -v notify-send >/dev/null 2>&1 &&
+        notify-send --urgency="$1" --icon=audio-input-microphone --app-name="Wispr Flow" "$2" "$3" || true
+}
+
+# --- unit files present? (first run / fresh home) ---------------------------------
+reload=0
+for u in wf-cleanup-llm wf-daemon wf-keylistener; do
+    if [ ! -f "$UNIT_DIR/$u.service" ]; then
+        mkdir -p "$UNIT_DIR"
+        cp "$HERE/systemd/$u.service" "$UNIT_DIR/"
+        reload=1
+    fi
+done
+[ "$reload" = 1 ] && systemctl --user daemon-reload
+
+# --- kill stray manual daemons BEFORE starting the service ------------------------
+# The daemon unlinks its socket on exit, so a dying manual instance would delete the
+# service instance's freshly-bound socket. Kill first, wait until fully gone.
+main_pid="$(systemctl --user show -p MainPID --value wf-daemon.service 2>/dev/null || echo 0)"
+strays=()
+for pid in $(pgrep -f "$HERE/wf_daemon.py" 2>/dev/null); do
+    [ "$pid" != "$main_pid" ] && strays+=("$pid")
+done
+if [ "${#strays[@]}" -gt 0 ]; then
+    say "stopping manually-launched daemon (pid ${strays[*]})"
+    kill "${strays[@]}" 2>/dev/null
+    for _ in $(seq 1 50); do
+        kill -0 "${strays[@]}" 2>/dev/null || break
+        sleep 0.1
+    done
+    kill -0 "${strays[@]}" 2>/dev/null && kill -9 "${strays[@]}" 2>/dev/null
+fi
+
+# --- enable + start everything (idempotent; re-enables after a mystery disable) ---
+systemctl --user enable --now "${SERVICES[@]}" >/dev/null 2>&1
+
+# --- health checks ----------------------------------------------------------------
+fails=()
+
+for s in "${SERVICES[@]}"; do
+    ok=0
+    for _ in $(seq 1 20); do
+        [ "$(systemctl --user is-active "$s" 2>/dev/null)" = active ] && { ok=1; break; }
+        sleep 0.25
+    done
+    [ "$ok" = 1 ] || fails+=("$s")
+done
+
+# daemon actually answering on its socket?
+ping_out=""
+for _ in $(seq 1 40); do
+    ping_out="$("$HERE/wf-toggle" ping 2>/dev/null)" && [ -n "$ping_out" ] && break
+    sleep 0.25
+done
+[ -n "$ping_out" ] || fails+=("wf-daemon.sock (no pong)")
+
+# cleanup LLM port reachable? (dead :11435 = raw, uncleaned dictation output)
+llm=0
+for _ in $(seq 1 20); do
+    (exec 3<>/dev/tcp/127.0.0.1/11435) 2>/dev/null && { exec 3>&- 3<&-; llm=1; break; }
+    sleep 0.25
+done
+[ "$llm" = 1 ] || fails+=("cleanup LLM :11435")
+
+# --- report -----------------------------------------------------------------------
+if [ "${#fails[@]}" -eq 0 ]; then
+    say "all up — daemon: $ping_out"
+    notify normal "Dictation ready" "All services up ($ping_out). Press the presentation key to talk."
+    exit 0
+else
+    say "FAILED: ${fails[*]}"
+    say "inspect with: journalctl --user -n 30 -u <unit>"
+    notify critical "Dictation FAILED to start" "Not running: ${fails[*]}
+Check: journalctl --user -u ${fails[0]%% *}"
+    exit 1
+fi

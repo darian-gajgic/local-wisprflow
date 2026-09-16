@@ -80,8 +80,9 @@ first logout/in, `ydotoold` can't type yet, so results are **copied to the clipb
 - Press it **again** to stop → it transcribes, cleans up, and types the result into the focused app.
 - `./wf-toggle status` shows `idle` / `recording` / `processing`. `./wf-toggle cancel` aborts a recording.
 
-The **Listening pill** (bottom-center of the primary monitor) has two mode buttons: **MeetingMode**
-and **NoteMode** (below). The pill is DPI-scaled and pinned to the primary monitor (it no longer
+The **Listening pill** (bottom-center of the primary monitor) has three buttons: **MeetingMode**,
+the **output mode** button (Clean → Notes → Raw, below) and the **language** button (EN → DE → RO).
+The pill is DPI-scaled and pinned to the primary monitor (it no longer
 mis-sizes or straddles the seam on a multi-monitor desktop).
 
 > **If your key press is sometimes "not registered":** on some laptops the trigger key
@@ -89,27 +90,34 @@ mis-sizes or straddles the seam on a multi-monitor desktop).
 > emitted two key-downs → two toggles that cancelled out. `wf-keylistener` now **debounces**
 > (default 300 ms, `WF_DEBOUNCE_MS`) so duplicate emissions collapse into a single toggle.
 
-## NoteMode (one sentence per line)
+## Output modes: Clean / Notes / Raw
 
-For longer notes, a single paragraph is hard to read. Turn on **NoteMode** and each dictation is
-written **one sentence per line** instead:
+The pill's middle button cycles the **output mode**. From a shell: `./wf-toggle mode` cycles,
+`./wf-toggle mode clean|note|raw` sets one directly, and the reply is `mode <name>`. The mode is
+**persistent**: it stays for every dictation until you change it (set `"mode": "note"` in your
+config to default it; the old `"note_mode": true` still works).
 
-1. Press your hotkey → the Listening pill appears → click **📝 NoteMode** (it lights up blue, "•ON").
-   Or run `./wf-toggle note` (toggles; prints `note on`/`note off`).
-2. Speak and stop as usual — the inserted text is broken at sentence boundaries, one per line, and
-   ends on a fresh line so the next note starts cleanly.
-3. NoteMode is a **persistent toggle** — it stays on for every dictation until you turn it off (or
-   set `"note_mode": true` in your config to default it on).
+| Mode | Button | What gets typed |
+|---|---|---|
+| **Clean** (default) | ✨ Clean | The cleanup LLM turns the transcript into proper sentences: periods, commas, question marks, capitals, fillers removed. One paragraph. |
+| **Notes** | 📝 Notes | The same cleanup, then **one sentence per line**, ending on a fresh line so the next note starts cleanly. |
+| **Raw** | 🔤 Raw | **Exactly the words Whisper heard**: no LLM, no filler removal, every punctuation mark stripped (`. , ; : ! ?`, quotes, brackets, dashes). Apostrophes inside words (`don't`) and separators inside numbers (`3.5`, `10:30`) survive; Whisper's capitalization is kept. Fastest mode. |
 
-Sentence splitting is **deterministic** (done in `format_notes()`, no LLM), so it works even when the
-cleanup LLM is unavailable — it relies on the punctuation Whisper already produces. Abbreviations
+Whisper itself sometimes returns a long recording as a lowercase run-on with **no punctuation at
+all** (a known large-v3 quirk, most often on long, fast, continuous speech). Clean and Notes mode
+rely on the cleanup prompt to repair that: it explicitly splits such run-ons into punctuated
+sentences. If a Clean dictation still arrives as one long unpunctuated line, the cleanup LLM was
+down or fell back: `journalctl --user -u wf-daemon -n 50` and look for `LLM cleanup failed` or
+`off-script`.
+
+Sentence splitting in Notes mode is **deterministic** (`format_notes()`, no LLM). Abbreviations
 (`Dr.`, `e.g.`, `z.B.`), initials, decimals, and standalone list markers (`1.`) don't trigger a line
 break, while a clause that merely ends in a number (`I scored 8.`) still splits.
 
-> **NoteMode types real Enter keys** (one per sentence line, `inject_method: "type"`). That's perfect
-> in a text editor / notes app, but in a **terminal or chat box** each newline submits the line — so
-> use NoteMode where newlines mean "new line", not "send". The pill shows **"NoteMode •ON"** while it's
-> active so you can tell at a glance.
+> **Notes mode types real Enter keys** (one per sentence line, `inject_method: "type"`). That's
+> perfect in a text editor / notes app, but in a **terminal or chat box** each newline submits the
+> line, so use it where newlines mean "new line", not "send". The pill's subtitle names the active
+> mode so you can tell at a glance. `./wf-toggle note` still works as a Notes on/off toggle.
 
 ## Meeting mode (dual-channel transcription)
 

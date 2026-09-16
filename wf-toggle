@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Tiny client for the wisprflow daemon — this is what the GNOME hotkey runs.
 
-Usage:  wf-toggle [toggle|start|stop|cancel|status|ping|shutdown]
-Default command is 'toggle'. Uses only the standard library (no venv needed),
+Usage:  wf-toggle [toggle|start|stop|cancel|status|ping|shutdown|note|mode [clean|note|raw]|lang|meeting]
+Default command is 'toggle'. `mode` alone cycles clean -> note -> raw; `mode raw` sets it. Uses only the standard library (no venv needed),
 so it works when bound directly to a desktop keyboard shortcut.
 """
 import os
@@ -14,7 +14,7 @@ SOCK = os.path.join(RUNTIME, "wf-daemon.sock")
 
 
 def main() -> int:
-    cmd = (sys.argv[1] if len(sys.argv) > 1 else "toggle").encode()
+    cmd = (" ".join(sys.argv[1:]) or "toggle").encode()
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(5)

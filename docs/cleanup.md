@@ -54,13 +54,14 @@ cleanup.
    produced sentences like *"Angepasst on the wishes of the customer"*. A "do NOT translate"
    sentence inside an English prompt did **not** hold it; native examples do.
 
-## Three failure modes this design fixes
+## Four failure modes this design fixes
 
 | Symptom | Cause | Fix |
 |---|---|---|
 | Long dictation summarized/paraphrased; paragraph newlines outside NoteMode; "Sure, here is the corrected text:" leaked | a small 3B model breaks down on long input | `gemma3:4b` + temperature 0 + minimal-edit prompt |
 | Short or instruction input answered/refused ("yes do that" → "please provide the dictated speech…"; "change the GPU delay" → "I am a large language model…") | bare-message framing → the model replies | `Input:`/`Output:` pattern-completion framing |
 | **German/Romanian dictation typed half in English** ("An differenten Standorten, in Business Center or in-house directly at the customers."); short input echoing an English example ("unterschiedlichen" → "No, not that one.") | all-English system prompt + English few-shot examples → the model completes in English | per-language prompts (`LLM_SYSTEM_BY_LANG`) + the word-drift backstop below |
+| **Long dictation typed as one lowercase run-on with no periods or commas** (2026-09-17: 6 of 11 long dictations that day); NoteMode then can't split lines either | whisper large-v3 sometimes returns a long recording unpunctuated (a known quirk, most often on long fast continuous speech), and the minimal-edit prompt only capitalized it | the prompt now REQUIRES splitting a run-on into punctuated sentences, with a long run-on few-shot (Example 8, also in DE/RO). An ASR-side fix (punctuated `hotwords`/`initial_prompt`) was tested and rejected: no effect on the run-on, and it leaked its own text on a bad clip |
 
 ## Safety net (`polish()` in `wf_daemon.py`)
 

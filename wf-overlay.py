@@ -38,10 +38,12 @@ import tkinter.font as tkfont
 
 MODE = sys.argv[1] if len(sys.argv) > 1 else "listening"
 TEXT = sys.argv[2] if len(sys.argv) > 2 else ""
-MODE = os.environ.get("WF_MODE") or ("note" if os.environ.get("WF_NOTE_MODE") == "1" else "clean")
-MODE_ORDER = ["clean", "note", "raw"]
-MODE_LABEL = {"clean": "✨  Clean", "note": "📝  Notes", "raw": "🔤  Raw"}
-MODE_SUB = {"clean": "press your key to stop",
+# Output mode (clean|note|raw) of the DAEMON, shown on the middle button. NOT the overlay's own
+# display mode (`MODE` = argv: listening|processing|meeting|done) — keep the names distinct.
+OUT_MODE = os.environ.get("WF_MODE") or ("note" if os.environ.get("WF_NOTE_MODE") == "1" else "clean")
+OUT_MODE_ORDER = ["clean", "note", "raw"]
+OUT_MODE_LABEL = {"clean": "✨  Clean", "note": "📝  Notes", "raw": "🔤  Raw"}
+OUT_MODE_SUB = {"clean": "press your key to stop",
             "note": "NoteMode · one line per sentence",
             "raw": "RawMode · exact words, no punctuation"}
 LANG = os.environ.get("WF_LANG", "en")          # "en" | "de" | "ro" — active session language
@@ -282,7 +284,7 @@ elif MODE == "processing":
 # LISTENING — waveform + label + MeetingMode / output-mode / language buttons
 # =========================================================================================
 else:
-    mode = [MODE if MODE in MODE_LABEL else "clean"]   # mutable so the click handler can cycle it
+    mode = [OUT_MODE if OUT_MODE in OUT_MODE_LABEL else "clean"]   # mutable so the click handler can cycle it
     lang = [LANG if LANG in LANG_LABEL else "en"]   # active language (mutable for click handler)
 
     PADX = S(14)
@@ -314,7 +316,7 @@ else:
 
     def set_label():
         m = mode[0]
-        cv.itemconfigure(sub_id, text=MODE_SUB[m], fill=(ACCENT2 if m != "clean" else SUBTLE))
+        cv.itemconfigure(sub_id, text=OUT_MODE_SUB[m], fill=(ACCENT2 if m != "clean" else SUBTLE))
 
     # ---- buttons (created once; hover/toggle only recolor via itemconfigure) ----
     round_rect(cv, bx1, meet_y1, bx2, meet_y2, S(9), fill=BTN, outline=BTN_BRD,
@@ -338,7 +340,7 @@ else:
         on = m != "clean"   # clean is the default — only Notes/Raw get accent treatment
         fill = (NOTE_HOV if hover else NOTE_BG) if on else (BTN_HOV if hover else BTN)
         cv.itemconfigure("mode_bg", fill=fill, outline=(NOTE_BRD if on else BTN_BRD))
-        cv.itemconfigure("mode_tx", text=MODE_LABEL[m], fill=(FG if on else SUBTLE))
+        cv.itemconfigure("mode_tx", text=OUT_MODE_LABEL[m], fill=(FG if on else SUBTLE))
 
     def set_lang(hover=False):
         cur = lang[0]
@@ -356,11 +358,11 @@ else:
         reply = send_cmd(b"mode")
         # reply looks like "mode note"
         new = reply.split()[-1] if reply.startswith("mode ") else None
-        if new in MODE_LABEL:
+        if new in OUT_MODE_LABEL:
             mode[0] = new
         else:
             # optimistic fallback: cycle locally if the reply was lost
-            mode[0] = MODE_ORDER[(MODE_ORDER.index(mode[0]) + 1) % len(MODE_ORDER)]
+            mode[0] = OUT_MODE_ORDER[(OUT_MODE_ORDER.index(mode[0]) + 1) % len(OUT_MODE_ORDER)]
         set_mode(hover=True)
         set_label()
 

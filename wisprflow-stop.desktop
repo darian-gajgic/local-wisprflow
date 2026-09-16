@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Wispr Flow (local) — Stop
+Comment=Stop local dictation and free its RAM/VRAM (autostarts again at next login)
+Exec=/home/sinep/local-wisprflow/wf-stop
+Icon=process-stop
+Terminal=false
+Categories=Utility;Audio;
+Keywords=dictation;whisper;speech;voice;stop;

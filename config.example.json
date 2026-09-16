@@ -21,7 +21,7 @@
   "inject_method": "type",
   "trailing_space": true,
 
-  "note_mode": false,
+  "mode": "clean",
 
   "meeting_dir": "~/wf-meetings",
   "meeting_vad_floor": 0.02,

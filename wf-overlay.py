@@ -2,19 +2,21 @@
 """wisprflow on-screen overlay — polished, DPI-aware, multi-monitor-correct indicators.
 
 Modes (argv):
-  listening        animated waveform + "Listening", plus two clickable mode buttons
-                   (MeetingMode / NoteMode); runs until SIGTERM
+  listening        animated waveform + "Listening", plus three clickable buttons
+                   (MeetingMode / output mode Clean->Notes->Raw / language); runs until SIGTERM
   meeting          "Meeting — recording" pill (pulsing red dot); runs until SIGTERM
   done  [TEXT]     green check + short text, auto-closes after ~1s
 
 Environment:
-  WF_NOTE_MODE=1        render the NoteMode button as active (note formatting is currently ON)
+  WF_MODE=<m>           active output mode: clean | note | raw (colors + labels the mode button)
+  WF_NOTE_MODE=1        legacy: same as WF_MODE=note
+  WF_LANG=<l>           active session language: en | de | ro
   WF_OVERLAY_SCALE=<f>  override the auto DPI scale (float); otherwise derived from screen DPI
   WF_OVERLAY_PREVIEW=<p> dev only: render one frame to PostScript at <p> and exit (no window)
 
 Clicking MeetingMode sends `meeting` to the daemon (switch to dual-channel meeting capture).
-Clicking NoteMode sends `note` — a persistent toggle: every dictation is then written one
-sentence per line. Borderless, bottom-center of the PRIMARY monitor, always-on-top, and
+Clicking the mode button sends `mode` — the daemon cycles clean -> note -> raw and replies
+"mode <name>"; the mode persists for every dictation until changed. Borderless, bottom-center of the PRIMARY monitor, always-on-top, and
 non-focus-stealing (X11 override-redirect via XWayland). tkinter only (project venv);
 low-fps so it costs almost nothing.
 
@@ -36,7 +38,17 @@ import tkinter.font as tkfont
 
 MODE = sys.argv[1] if len(sys.argv) > 1 else "listening"
 TEXT = sys.argv[2] if len(sys.argv) > 2 else ""
-NOTE_ON = os.environ.get("WF_NOTE_MODE") == "1"
+# Output mode (clean|note|raw) of the DAEMON, shown on the middle button. NOT the overlay's own
+# display mode (`MODE` = argv: listening|processing|meeting|done) — keep the names distinct.
+OUT_MODE = os.environ.get("WF_MODE") or ("note" if os.environ.get("WF_NOTE_MODE") == "1" else "clean")
+OUT_MODE_ORDER = ["clean", "note", "raw"]
+# No emoji in these labels: this Tk build draws non-BMP emoji as nothing and BMP dingbats (e.g.
+# U+2728) as a tofu box (verified with pill-shot.py). Subtitles must stay <= ~26 chars or the
+# button column clips them.
+OUT_MODE_LABEL = {"clean": "Clean", "note": "Notes", "raw": "Raw"}
+OUT_MODE_SUB = {"clean": "press your key to stop",
+            "note": "one sentence per line",
+            "raw": "raw words, no punctuation"}
 LANG = os.environ.get("WF_LANG", "en")          # "en" | "de" | "ro" — active session language
 LANG_LABEL = {"en": "🌐 EN", "de": "🌐 DE", "ro": "🌐 RO"}
 PREVIEW = os.environ.get("WF_OVERLAY_PREVIEW")  # dev: postscript path, no live window
@@ -55,7 +67,7 @@ SUBTLE  = "#96a0b4"
 BTN     = "#242835"
 BTN_HOV = "#2e3342"
 BTN_BRD = "#404862"
-NOTE_BG = "#264a86"    # NoteMode button when active
+NOTE_BG = "#264a86"    # mode / language button when active (non-default)
 NOTE_HOV = "#2d569b"
 NOTE_BRD = "#5b93ff"
 
@@ -272,10 +284,10 @@ elif MODE == "processing":
 
 
 # =========================================================================================
-# LISTENING — waveform + label + MeetingMode / NoteMode buttons
+# LISTENING — waveform + label + MeetingMode / output-mode / language buttons
 # =========================================================================================
 else:
-    note_on = [NOTE_ON]   # mutable so the click handler can flip it
+    mode = [OUT_MODE if OUT_MODE in OUT_MODE_LABEL else "clean"]   # mutable so the click handler can cycle it
     lang = [LANG if LANG in LANG_LABEL else "en"]   # active language (mutable for click handler)
 
     PADX = S(14)
@@ -301,15 +313,13 @@ else:
     # forever (a redraw storm that pegs the CPU and freezes clicks). Reconfiguring in place has
     # no such feedback loop.
 
-    # ---- left label (title + subtitle that reflects NoteMode state) ----
+    # ---- left label (title + subtitle that names the active output mode) ----
     cv.create_text(lbl_x, int(H * 0.40), text="Listening", anchor="w", fill=FG, font=F_TITLE)
     sub_id = cv.create_text(lbl_x, int(H * 0.68), text="", anchor="w", font=F_SUB)
 
     def set_label():
-        on = note_on[0]
-        cv.itemconfigure(sub_id, text=("NoteMode · one line per sentence" if on
-                                       else "press your key to stop"),
-                         fill=(ACCENT2 if on else SUBTLE))
+        m = mode[0]
+        cv.itemconfigure(sub_id, text=OUT_MODE_SUB[m], fill=(ACCENT2 if m != "clean" else SUBTLE))
 
     # ---- buttons (created once; hover/toggle only recolor via itemconfigure) ----
     round_rect(cv, bx1, meet_y1, bx2, meet_y2, S(9), fill=BTN, outline=BTN_BRD,
@@ -317,9 +327,9 @@ else:
     cv.create_text((bx1 + bx2) // 2, (meet_y1 + meet_y2) // 2, text="👥  MeetingMode",
                    fill=FG, font=F_BTN, tags=("meet", "meet_tx"))
     round_rect(cv, bx1, note_y1, bx2, note_y2, S(9), fill=BTN, outline=BTN_BRD,
-               width=max(1, S(1)), tags=("note", "note_bg"))
+               width=max(1, S(1)), tags=("mode", "mode_bg"))
     cv.create_text((bx1 + bx2) // 2, (note_y1 + note_y2) // 2, text="", font=F_BTN,
-                   tags=("note", "note_tx"))
+                   tags=("mode", "mode_tx"))
     round_rect(cv, bx1, lang_y1, bx2, lang_y2, S(9), fill=BTN, outline=BTN_BRD,
                width=max(1, S(1)), tags=("lang", "lang_bg"))
     cv.create_text((bx1 + bx2) // 2, (lang_y1 + lang_y2) // 2, text="", font=F_BTN,
@@ -328,12 +338,12 @@ else:
     def set_meet(hover=False):
         cv.itemconfigure("meet_bg", fill=(BTN_HOV if hover else BTN))
 
-    def set_note(hover=False):
-        on = note_on[0]
+    def set_mode(hover=False):
+        m = mode[0]
+        on = m != "clean"   # clean is the default — only Notes/Raw get accent treatment
         fill = (NOTE_HOV if hover else NOTE_BG) if on else (BTN_HOV if hover else BTN)
-        cv.itemconfigure("note_bg", fill=fill, outline=(NOTE_BRD if on else BTN_BRD))
-        cv.itemconfigure("note_tx", text=("📝  NoteMode  •ON" if on else "📝  NoteMode"),
-                         fill=(FG if on else SUBTLE))
+        cv.itemconfigure("mode_bg", fill=fill, outline=(NOTE_BRD if on else BTN_BRD))
+        cv.itemconfigure("mode_tx", text=OUT_MODE_LABEL[m], fill=(FG if on else SUBTLE))
 
     def set_lang(hover=False):
         cur = lang[0]
@@ -347,15 +357,16 @@ else:
         send_cmd(b"meeting")
         close()   # daemon relaunches this overlay in meeting mode
 
-    def on_note(*_):
-        reply = send_cmd(b"note")
-        if reply.startswith("note on"):
-            note_on[0] = True
-        elif reply.startswith("note off"):
-            note_on[0] = False
+    def on_mode(*_):
+        reply = send_cmd(b"mode")
+        # reply looks like "mode note"
+        new = reply.split()[-1] if reply.startswith("mode ") else None
+        if new in OUT_MODE_LABEL:
+            mode[0] = new
         else:
-            note_on[0] = not note_on[0]   # optimistic fallback if the reply was lost
-        set_note(hover=True)
+            # optimistic fallback: cycle locally if the reply was lost
+            mode[0] = OUT_MODE_ORDER[(OUT_MODE_ORDER.index(mode[0]) + 1) % len(OUT_MODE_ORDER)]
+        set_mode(hover=True)
         set_label()
 
     def on_lang(*_):
@@ -372,15 +383,15 @@ else:
 
     set_label()
     set_meet()
-    set_note()
+    set_mode()
     set_lang()
 
     cv.tag_bind("meet", "<Button-1>", on_meeting)
     cv.tag_bind("meet", "<Enter>", lambda e: (set_meet(True), cv.config(cursor="hand2")))
     cv.tag_bind("meet", "<Leave>", lambda e: (set_meet(False), cv.config(cursor="")))
-    cv.tag_bind("note", "<Button-1>", on_note)
-    cv.tag_bind("note", "<Enter>", lambda e: (set_note(True), cv.config(cursor="hand2")))
-    cv.tag_bind("note", "<Leave>", lambda e: (set_note(False), cv.config(cursor="")))
+    cv.tag_bind("mode", "<Button-1>", on_mode)
+    cv.tag_bind("mode", "<Enter>", lambda e: (set_mode(True), cv.config(cursor="hand2")))
+    cv.tag_bind("mode", "<Leave>", lambda e: (set_mode(False), cv.config(cursor="")))
     cv.tag_bind("lang", "<Button-1>", on_lang)
     cv.tag_bind("lang", "<Enter>", lambda e: (set_lang(True), cv.config(cursor="hand2")))
     cv.tag_bind("lang", "<Leave>", lambda e: (set_lang(False), cv.config(cursor="")))

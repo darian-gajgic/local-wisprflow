@@ -42,10 +42,13 @@ TEXT = sys.argv[2] if len(sys.argv) > 2 else ""
 # display mode (`MODE` = argv: listening|processing|meeting|done) — keep the names distinct.
 OUT_MODE = os.environ.get("WF_MODE") or ("note" if os.environ.get("WF_NOTE_MODE") == "1" else "clean")
 OUT_MODE_ORDER = ["clean", "note", "raw"]
-OUT_MODE_LABEL = {"clean": "✨  Clean", "note": "📝  Notes", "raw": "🔤  Raw"}
+# No emoji in these labels: this Tk build draws non-BMP emoji as nothing and BMP dingbats (e.g.
+# U+2728) as a tofu box (verified with pill-shot.py). Subtitles must stay <= ~26 chars or the
+# button column clips them.
+OUT_MODE_LABEL = {"clean": "Clean", "note": "Notes", "raw": "Raw"}
 OUT_MODE_SUB = {"clean": "press your key to stop",
-            "note": "NoteMode · one line per sentence",
-            "raw": "RawMode · exact words, no punctuation"}
+            "note": "one sentence per line",
+            "raw": "raw words, no punctuation"}
 LANG = os.environ.get("WF_LANG", "en")          # "en" | "de" | "ro" — active session language
 LANG_LABEL = {"en": "🌐 EN", "de": "🌐 DE", "ro": "🌐 RO"}
 PREVIEW = os.environ.get("WF_OVERLAY_PREVIEW")  # dev: postscript path, no live window

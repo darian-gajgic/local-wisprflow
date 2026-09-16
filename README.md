@@ -45,6 +45,7 @@ on demand, and nothing disturbs the system Ollama service or its config.
 | `wf-toggle` | Tiny stdlib client the hotkey runs: `toggle`/`start`/`stop`/`cancel`/`status`/`ping`/`shutdown`. |
 | `wf-keylistener.py` | evdev listener: fires `wf-toggle` on a special key GNOME can't bind (here `KEY_PRESENTATION`). |
 | `wf_meeting.py` | Meeting mode: dual-channel (mic + system-audio monitor) speaker-labeled transcription. |
+| `pill-shot.py` | Dev tool: screenshots the live Listening pill in each output mode (`python3 pill-shot.py`, system python3). The only scripted capture that works on GNOME Wayland here. |
 | `wf_layout.py` | Layout-aware typing: maps chars → correct keycodes for the active XKB layout (libxkbcommon). |
 | `systemd/*.service` | User services (autostart): `wf-daemon`, `wf-cleanup-llm` (isolated cleanup Ollama, `gemma3:4b`), `wf-keylistener`, `ydotool`. |
 | `install-system.sh` | **(sudo)** apt: `libportaudio2 ydotool wl-clipboard` + `/dev/uinput` udev rule + `input` group. |
@@ -99,9 +100,9 @@ config to default it; the old `"note_mode": true` still works).
 
 | Mode | Button | What gets typed |
 |---|---|---|
-| **Clean** (default) | ✨ Clean | The cleanup LLM turns the transcript into proper sentences: periods, commas, question marks, capitals, fillers removed. One paragraph. |
-| **Notes** | 📝 Notes | The same cleanup, then **one sentence per line**, ending on a fresh line so the next note starts cleanly. |
-| **Raw** | 🔤 Raw | **Exactly the words Whisper heard**: no LLM, no filler removal, every punctuation mark stripped (`. , ; : ! ?`, quotes, brackets, dashes). Apostrophes inside words (`don't`) and separators inside numbers (`3.5`, `10:30`) survive; Whisper's capitalization is kept. Fastest mode. |
+| **Clean** (default) | Clean | The cleanup LLM turns the transcript into proper sentences: periods, commas, question marks, capitals, fillers removed. One paragraph. |
+| **Notes** | Notes | The same cleanup, then **one sentence per line**, ending on a fresh line so the next note starts cleanly. |
+| **Raw** | Raw | **Exactly the words Whisper heard**: no LLM, no filler removal, every punctuation mark stripped (`. , ; : ! ?`, quotes, brackets, dashes). Apostrophes inside words (`don't`) and separators inside numbers (`3.5`, `10:30`) survive; Whisper's capitalization is kept. Fastest mode. |
 
 Whisper itself sometimes returns a long recording as a lowercase run-on with **no punctuation at
 all** (a known large-v3 quirk, most often on long, fast, continuous speech). Clean and Notes mode

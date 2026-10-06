@@ -1,185 +1,95 @@
 # local-wisprflow
 
-A fully-local, private dictation tool — speak, and cleaned/punctuated text is typed into
-whatever app is focused. Zero cloud. Mirrors Wispr Flow's two-stage "wait-then-polish"
-design entirely on this machine.
+Push-to-talk dictation for Linux that runs entirely on your own machine. Press a hotkey, speak, press it again, and cleaned-up, punctuated text is typed into whichever app has focus. Speech recognition (faster-whisper) and text cleanup (a small LLM on Ollama) both run locally, so no audio or text leaves the computer.
 
 ```
-mic ─▶ record (push-to-talk toggle) ─▶ faster-whisper ASR ─▶ Ollama LLM cleanup ─▶ type into focused app
-        wf-toggle hotkey                (large-v3, CPU)         (gemma3:4b)          (ydotool)
+mic -> record (hotkey) -> faster-whisper large-v3 -> Ollama gemma3:4b cleanup -> typed into the focused app (ydotool)
 ```
 
-## Why these specific choices on THIS machine
+## Why
 
-This box shares its **12 GB GPU with a resident 14B research harness (~10 GB VRAM)** and runs
-Ollama with `OLLAMA_KV_CACHE_TYPE=q4_0`. Two consequences drove the design — both verified
-empirically during the build:
+It follows the two-stage design of Wispr Flow: transcribe first, then let an LLM fix punctuation and remove filler words. Here both stages are local. It is also built to share one consumer GPU with other local models without fighting them for memory.
 
-- **ASR is adaptive + power-aware (`asr_device: "auto"`).** A CPU model stays warm always. On
-  **dictation activity**, whisper is promoted to the **GPU** (`large-v3`, ~0.3 s) — the load runs
-  *while you speak*, so it's ready by the time you stop. It's demoted back to **CPU** (freeing its
-  VRAM) when (a) the harness's 14B appears on the GPU, or (b) there's been **no dictation for
-  `gpu_idle_timeout_s` (default 5 min)** — so the dGPU can auto-suspend to **D3cold (0 W)** and save
-  battery. Switches never block dictation (the warm CPU model covers the gap). To avoid *waking* a
-  sleeping dGPU, the monitor detects the harness via Ollama `/api/ps` (HTTP) while idle and only
-  runs `nvidia-smi` while whisper is already on the GPU. `wf-toggle ping` shows `auto(cuda)`/`auto(cpu)`.
-- **Cleanup uses `gemma3:4b` on a dedicated, isolated Ollama** (`wf-cleanup-llm.service`, port
-  **11435**, own models dir, **f16 KV cache**). The system Ollama's `q4_0` cache garbles small
-  models, but this second instance doesn't inherit it. gemma3:4b (temperature 0) follows the
-  "clean up, don't rewrite" instruction far more faithfully than a 3B — which summarized long
-  dictations, inserted paragraph breaks, and leaked "Sure, here is the corrected text:". Cleanup
-  runs in **~0.8–1.3 s** using ~3.3 GB, and a deterministic sanitizer in `polish()` strips any
-  stray preamble/newlines as a backstop. Dictation never touches the system Ollama or its 14B.
-  See **[docs/cleanup.md](docs/cleanup.md)** for the full cleanup-pipeline design, the two
-  failure modes it fixes, and the pattern-completion framing that keeps it transcribing.
+## Features
 
-Net result: end-to-end **~0.9 s** after you stop talking, whisper yields the GPU to the harness
-on demand, and nothing disturbs the system Ollama service or its config.
+- **Three output modes**, cycled from the on-screen pill or with `./wf-toggle mode`:
+  - *Clean* (default): the LLM turns the transcript into punctuated sentences and drops fillers.
+  - *Notes*: the same cleanup, one sentence per line. It types real Enter keys, so avoid it in terminals and chat boxes.
+  - *Raw*: exactly what Whisper heard, no LLM, punctuation stripped. The fastest mode.
+- **English, German and Romanian**, switchable per session from the pill.
+- **Layout-aware typing.** `wf_layout.py` reads the active XKB layout through libxkbcommon and sends the matching key codes. Text lands correctly on non-US layouts such as German QWERTZ, in terminals and GUI apps alike, without touching the clipboard.
+- **Adaptive GPU use** (`"asr_device": "auto"`). A CPU copy of Whisper is always warm. Whisper moves to the GPU while you dictate and back to the CPU when another process loads a large model, or after 30 minutes without dictation so the GPU can power down. Switching never blocks a dictation.
+- **Isolated cleanup model.** A second Ollama instance on port 11435, with its own model directory and an f16 KV cache, so it never touches a system Ollama or its settings. A deterministic sanitizer strips any preamble the model adds. Design notes: [docs/cleanup.md](docs/cleanup.md).
+- **Meeting mode.** Captures the microphone ("Me") and the system audio output ("Client") as two channels and writes a live, speaker-labelled Markdown transcript to `~/wf-meetings/`. Use headphones so the microphone does not pick up the other side, and only record calls you are allowed to record.
+
+## Requirements
+
+- Linux with GNOME on Wayland and PipeWire. The hotkey is bound through `gsettings`; typing uses `ydotool` and `/dev/uinput`.
+- `libportaudio2`, `ydotool`, `wl-clipboard` (installed by `install-system.sh` with apt), and `ffmpeg` for meeting mode.
+- Python 3.12 and [uv](https://github.com/astral-sh/uv).
+- [Ollama](https://ollama.com), installed at `/usr/local/bin/ollama` (the path the cleanup service uses).
+- Optional: an NVIDIA GPU. The CUDA 12 libraries come from pip wheels, so no system CUDA toolkit is needed. Without a GPU, set `"asr_device": "cpu"`.
+
+## Install
+
+```bash
+git clone https://github.com/darian-gajgic/local-wisprflow.git
+cd local-wisprflow
+
+# 1. Python environment with the pinned versions
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -r requirements-lock.txt
+
+# 2. Download the Whisper model once (the daemon runs with HF_HUB_OFFLINE=1)
+.venv/bin/python -c "from faster_whisper import WhisperModel; WhisperModel('large-v3', device='cpu', compute_type='int8')"
+
+# 3. System packages and /dev/uinput access, then log out and back in
+sudo -v && ./install-system.sh
+
+# 4. Config, user services (cleanup LLM, daemon, key listener) and the one-time gemma3:4b pull
+mkdir -p ~/.config/wisprflow && cp config.example.json ~/.config/wisprflow/config.json
+./install-services.sh
+
+# 5. Bind a hotkey
+./set-hotkey.sh '<Ctrl><Super>space'
+```
+
+The unit files in `systemd/` and the two `.desktop` files contain the absolute path of the original install. Point their `ExecStart` and `Exec` lines at your clone before step 4. Until you log out and back in after step 3, `ydotool` cannot type; set `"inject_method": "clipboard"` to try it before that.
+
+## Usage
+
+- Press the hotkey: a "Listening" pill appears. Speak, then press the hotkey again. The text is typed into the focused window.
+- `./wf-toggle status` shows `idle`, `recording` or `processing`. `./wf-toggle cancel` discards a recording.
+- `./wf-start` brings the whole stack up and health-checks it. `./wf-stop` shuts it down.
+- Logs: `journalctl --user -u wf-daemon -n 50`.
+
+## Configuration
+
+Settings live in `~/.config/wisprflow/config.json`. The most useful ones:
+
+| Key | Effect |
+|---|---|
+| `auto_stop`, `vad_rms_threshold`, `silence_ms` | Stop on silence instead of a second key press. Calibrate the threshold to your microphone. |
+| `inject_method` | `type` (default, layout-aware), `paste`, or `clipboard`. |
+| `initial_prompt` | Bias recognition towards names and jargon you use often. |
+| `llm_enable` | `false` skips cleanup and types the raw transcript. |
+| `asr_model` | `distil-large-v3` or `medium` for lower latency at some cost in accuracy. |
+| `meeting_vad_floor`, `meeting_silence_ms` | Tune how meeting mode splits speech. |
 
 ## Components
 
 | File | Role |
 |---|---|
-| `wf_daemon.py` | Resident daemon: keeps whisper warm, listens on a Unix socket, runs record→ASR→cleanup→inject. |
-| `wf-run` | Launcher: sets `LD_LIBRARY_PATH` (CUDA wheels) + `YDOTOOL_SOCKET`, execs the daemon under `.venv`. |
-| `wf-toggle` | Tiny stdlib client the hotkey runs: `toggle`/`start`/`stop`/`cancel`/`status`/`ping`/`shutdown`. |
-| `wf-keylistener.py` | evdev listener: fires `wf-toggle` on a special key GNOME can't bind (here `KEY_PRESENTATION`). |
-| `wf_meeting.py` | Meeting mode: dual-channel (mic + system-audio monitor) speaker-labeled transcription. |
-| `pill-shot.py` | Dev tool: screenshots the live Listening pill in each output mode (`python3 pill-shot.py`, system python3). The only scripted capture that works on GNOME Wayland here. |
-| `wf_layout.py` | Layout-aware typing: maps chars → correct keycodes for the active XKB layout (libxkbcommon). |
-| `systemd/*.service` | User services (autostart): `wf-daemon`, `wf-cleanup-llm` (isolated cleanup Ollama, `gemma3:4b`), `wf-keylistener`, `ydotool`. |
-| `install-system.sh` | **(sudo)** apt: `libportaudio2 ydotool wl-clipboard` + `/dev/uinput` udev rule + `input` group. |
-| `install-services.sh` | Start the user services (no sudo) + pull `gemma3:4b` into the isolated cleanup Ollama. |
-| `set-hotkey.sh` / `grab-key-gui.py` / `grab-key-evdev.py` | Bind a GNOME shortcut, or capture a special hardware key. |
-| `config.example.json` | Copy to `~/.config/wisprflow/config.json` to override defaults. |
+| `wf_daemon.py` | Resident daemon: keeps Whisper warm and runs record, transcribe, clean up, type. |
+| `wf-toggle` | Small client the hotkey calls (`toggle`, `status`, `cancel`, `mode`, `ping`). |
+| `wf-overlay.py` | The on-screen pill with mode, language and meeting buttons. |
+| `wf_layout.py` | Character to key-code mapping for the active keyboard layout. |
+| `wf_meeting.py` | Two-channel meeting transcription. |
+| `wf-keylistener.py` | Optional evdev listener for a hardware key GNOME cannot bind. |
+| `systemd/` | User services for the daemon, the cleanup Ollama and the key listener. |
 
-## Setup (from scratch)
+## Tested on
 
-The Python env is already built (`.venv`, Python 3.12, faster-whisper + CUDA-12 wheels) and
-`gemma3:4b` (cleanup) / `large-v3` (ASR) are already downloaded. Remaining steps:
+One laptop: NVIDIA RTX 5070 Ti Laptop GPU (12 GB), a 24-thread CPU, GNOME on Wayland, German keyboard layout, built-in microphone. During development the GPU also held a 14B model on the system Ollama, using about 10 GB of VRAM; the adaptive ASR and the separate cleanup instance were designed around that.
 
-```bash
-# 1. system packages + uinput access  (needs: run `sudo -v` in your terminal first)
-./install-system.sh
-#    -> then LOG OUT and back in (for the 'input' group to apply)
-
-# 2. start the services (after re-login)
-./install-services.sh
-
-# 3. bind a hotkey (Super+D is taken by "show desktop" here, so use something free)
-./set-hotkey.sh '<Ctrl><Super>space'
-```
-
-**Audio:** the daemon captures from the PipeWire default source, which is pinned to the
-**laptop built-in mic** (the G522 wireless headset is deliberately not used). Before your
-first logout/in, `ydotoold` can't type yet, so results are **copied to the clipboard**
-(paste with Ctrl+V); after re-login, they're typed automatically.
-
-## Usage
-
-- Press your hotkey → **recording** (an animated "Listening" pill appears) → speak.
-- Press it **again** to stop → it transcribes, cleans up, and types the result into the focused app.
-- `./wf-toggle status` shows `idle` / `recording` / `processing`. `./wf-toggle cancel` aborts a recording.
-
-The **Listening pill** (bottom-center of the primary monitor) has three buttons: **MeetingMode**,
-the **output mode** button (Clean → Notes → Raw, below) and the **language** button (EN → DE → RO).
-The pill is DPI-scaled and pinned to the primary monitor (it no longer
-mis-sizes or straddles the seam on a multi-monitor desktop).
-
-> **If your key press is sometimes "not registered":** on some laptops the trigger key
-> (`KEY_PRESENTATION` here) is reported by *several* input devices at once, so one physical press
-> emitted two key-downs → two toggles that cancelled out. `wf-keylistener` now **debounces**
-> (default 300 ms, `WF_DEBOUNCE_MS`) so duplicate emissions collapse into a single toggle.
-
-## Output modes: Clean / Notes / Raw
-
-The pill's middle button cycles the **output mode**. From a shell: `./wf-toggle mode` cycles,
-`./wf-toggle mode clean|note|raw` sets one directly, and the reply is `mode <name>`. The mode is
-**persistent**: it stays for every dictation until you change it (set `"mode": "note"` in your
-config to default it; the old `"note_mode": true` still works).
-
-| Mode | Button | What gets typed |
-|---|---|---|
-| **Clean** (default) | Clean | The cleanup LLM turns the transcript into proper sentences: periods, commas, question marks, capitals, fillers removed. One paragraph. |
-| **Notes** | Notes | The same cleanup, then **one sentence per line**, ending on a fresh line so the next note starts cleanly. |
-| **Raw** | Raw | **Exactly the words Whisper heard**: no LLM, no filler removal, every punctuation mark stripped (`. , ; : ! ?`, quotes, brackets, dashes). Apostrophes inside words (`don't`) and separators inside numbers (`3.5`, `10:30`) survive; Whisper's capitalization is kept. Fastest mode. |
-
-Whisper itself sometimes returns a long recording as a lowercase run-on with **no punctuation at
-all** (a known large-v3 quirk, most often on long, fast, continuous speech). Clean and Notes mode
-rely on the cleanup prompt to repair that: it explicitly splits such run-ons into punctuated
-sentences. If a Clean dictation still arrives as one long unpunctuated line, the cleanup LLM was
-down or fell back: `journalctl --user -u wf-daemon -n 50` and look for `LLM cleanup failed` or
-`off-script`.
-
-Sentence splitting in Notes mode is **deterministic** (`format_notes()`, no LLM). Abbreviations
-(`Dr.`, `e.g.`, `z.B.`), initials, decimals, and standalone list markers (`1.`) don't trigger a line
-break, while a clause that merely ends in a number (`I scored 8.`) still splits.
-
-> **Notes mode types real Enter keys** (one per sentence line, `inject_method: "type"`). That's
-> perfect in a text editor / notes app, but in a **terminal or chat box** each newline submits the
-> line, so use it where newlines mean "new line", not "send". The pill's subtitle names the active
-> mode so you can tell at a glance. `./wf-toggle note` still works as a Notes on/off toggle.
-
-## Meeting mode (dual-channel transcription)
-
-Transcribes a call with **speaker separation**, for meetings you're allowed to record:
-
-1. Press your hotkey → the listening pill appears with a **"👥 MeetingMode"** button.
-2. Click **MeetingMode** → it starts capturing two streams and writes a live transcript to
-   `~/wf-meetings/meeting-<timestamp>.md`:
-   ```
-   Client: <what the other side said>
-
-   Me: <what you said>
-   ```
-3. Press your hotkey again to **stop** and finalize the file.
-
-How it works: the **microphone** = "Me" and the **default output sink's `.monitor`** (whatever is
-playing — the Zoom/Teams call) = "Client", both captured via **`ffmpeg -f pulse`**. (This matters:
-`sounddevice` hangs on monitor sources here, and `pw-record --target <sink>` silently falls back
-to the mic for **Bluetooth** sinks — so both channels would record your voice. `ffmpeg`'s pulse
-`.monitor` input works for ALSA *and* Bluetooth.) Each stream is segmented on silence (windowed
-energy VAD), transcribed **faithfully** (no LLM rewrite) by the shared WhisperModel behind
-`model_lock`, and appended live. Speaker labels come from the source channel — no diarization ML.
-
-> **Use headphones.** With the client's audio in your earbuds (not the speaker), the mic never
-> hears them, so the two streams are cleanly separated. On **speakers** the mic re-captures the
-> client (bleed); a dedup guard keeps the clean "Client" copy, but headphones are the happy path.
-> Set your earbuds as the default output before starting — meeting mode follows the default sink.
-
-Tunables: `meeting_dir`, `meeting_vad_floor` (speech threshold — raise if your speech gets split,
-lower if quiet speech is missed), `meeting_silence_ms`, `meeting_beam_size`.
-
-## Tuning (`~/.config/wisprflow/config.json`)
-
-Copy `config.example.json` there and edit. Common knobs:
-
-- **`auto_stop: true`** — stop automatically after `silence_ms` of silence (energy VAD) instead of
-  a second keypress. Calibrate `vad_rms_threshold` to your mic (headset ≈ 0.01; noisier ≈ higher).
-- **`inject_method`** — `type` (default; **layout-aware** — see gotchas), `paste` (wl-copy + a
-  paste chord; needs the right chord per app), or `clipboard` (just copies; you paste).
-- **`initial_prompt`** — bias ASR toward names/jargon you dictate often.
-- **`llm_enable: false`** — skip cleanup, inject the raw transcript (lowest latency).
-- **`asr_model`** — `distil-large-v3` or `medium` for lower latency at some accuracy cost.
-
-## Latency (measured here)
-
-For a spoken utterance, expect roughly **ASR (~0.47× its length) + cleanup (~0.8–1.3 s)** after
-you stop talking — e.g. a 6 s sentence ≈ 3 s ASR + ~1 s cleanup. Cleanup runs on the isolated
-`gemma3:4b` (`:11435`) and is independent of the harness; it's slower only on the first call
-after the model idles out of memory (~2–4 s cold load).
-
-## Notes / gotchas
-
-- **Injection is layout-aware typing (`inject_method: "type"`).** Plain `ydotool type` assumes a
-  US layout and mistypes on non-US ones (German QWERTZ: `y`↔`z`, `?`→`_`). Instead, `wf_layout.py`
-  reads the current XKB layout (here `de+nodeadkeys`) via **libxkbcommon (ctypes)** and maps each
-  character to the correct **evdev keycode**, which ydotool emits — so text lands correctly in
-  **every** app (terminal *and* GUI) with **no paste chord** and no clipboard use. This avoids the
-  paste-chord problem (GUIs want Ctrl+V, terminals like Hermes want Ctrl+Shift+V) since focused-app
-  detection is blocked on GNOME Wayland. Trade-offs: typing is slightly slower than paste, and
-  characters not on the keyboard (em-dash, curly quotes) are normalized to plain equivalents.
-  The `paste`/`clipboard` methods remain available for special cases.
-- **Don't run whisper on the GPU while the harness is active** — it will OOM or evict the 14B.
-- The daemon imports `sounddevice` only when recording, so it starts fine even before PortAudio
-  is installed (recording just errors until `install-system.sh` has run).
+Measured there: with Whisper on the GPU, text appears about 0.9 s after you stop speaking. On the CPU, large-v3 int8 transcribes at about 0.47 times the length of the recording, and cleanup adds 0.8 to 1.3 s.
